@@ -7,7 +7,7 @@ use gtk::{Application, ApplicationWindow, Box as GtkBox, Button, Entry, Inhibit,
 use webkit2gtk::{LoadEvent, WebView, WebViewExt};
 
 use crate::adblock::Blocker;
-use crate::browser::{create_webview, TabManager};
+use crate::browser::{create_web_context, create_webview, TabManager};
 use crate::commands::{CommandAction, CommandPalette};
 use crate::energy::{EnergyLevel, EnergyManager};
 use crate::storage::Storage;
@@ -34,18 +34,18 @@ struct AppState {
     storage: Storage,
     energy: EnergyManager,
     blocker: Rc<Blocker>,
+    web_context: webkit2gtk::WebContext,
     notebook: Notebook,
-    content_box: GtkBox,
     url_entry: Entry,
     eco_label: Label,
     block_label: Label,
-    command_mode: bool,
 }
 
 impl BrowserWindow {
     pub fn new(app: &Application) -> Self {
         let blocker = Rc::new(Blocker::new());
         let storage = Storage::open();
+        let web_context = create_web_context();
 
         let window = ApplicationWindow::builder()
             .application(app)
@@ -81,18 +81,17 @@ impl BrowserWindow {
             storage,
             energy: EnergyManager::new(),
             blocker: blocker.clone(),
+            web_context,
             notebook: notebook.clone(),
-            content_box: content_box.clone(),
             url_entry: url_entry.clone(),
             eco_label: eco_label.clone(),
             block_label: block_label.clone(),
-            command_mode: false,
         }));
 
         Self::wire_toolbar(&toolbar, state.clone());
         Self::wire_shortcuts(&window, state.clone());
         Self::wire_notebook(&notebook, state.clone());
-        Self::render_tabs(state.clone());
+        Self::render_tabs(state.clone(), true);
         Self::start_energy_timer(state.clone());
 
         Self { window, state }
@@ -214,13 +213,21 @@ impl BrowserWindow {
                 return Inhibit(true);
             }
             if ctrl && !shift && key == gtk::gdk::keys::constants::Tab {
-                state.borrow_mut().tabs.next_tab();
-                Self::render_tabs(state.clone());
+                let idx = {
+                    let mut st = state.borrow_mut();
+                    st.tabs.next_tab();
+                    st.tabs.active_index()
+                };
+                Self::switch_to_tab(state.clone(), idx);
                 return Inhibit(true);
             }
             if ctrl && shift && key == gtk::gdk::keys::constants::Tab {
-                state.borrow_mut().tabs.prev_tab();
-                Self::render_tabs(state.clone());
+                let idx = {
+                    let mut st = state.borrow_mut();
+                    st.tabs.prev_tab();
+                    st.tabs.active_index()
+                };
+                Self::switch_to_tab(state.clone(), idx);
                 return Inhibit(true);
             }
             if ctrl && key == gtk::gdk::keys::constants::R {
@@ -262,90 +269,204 @@ impl BrowserWindow {
     fn wire_notebook(notebook: &Notebook, state: Rc<RefCell<AppState>>) {
         notebook.connect_switch_page(move |_nb, _page, page_num| {
             let index = page_num as usize;
-            {
-                let mut st = state.borrow_mut();
-                st.tabs.set_active(index);
-                if let Some(tab) = st.tabs.tabs_mut().get_mut(index) {
-                    if tab.is_suspended() {
+            let state = state.clone();
+            glib::idle_add_local_once(move || {
+                let needs_render = {
+                    let mut st = state.borrow_mut();
+                    st.tabs.set_active(index);
+                    st.tabs
+                        .tabs()
+                        .get(index)
+                        .map(|t| t.is_suspended())
+                        .unwrap_or(false)
+                };
+
+                if needs_render {
+                    if let Some(tab) = state.borrow_mut().tabs.tabs_mut().get_mut(index) {
                         tab.wake();
                     }
+                    Self::render_tabs(state.clone(), true);
+                } else if let Some(tab) = state.borrow().tabs.active_tab() {
+                    state.borrow().url_entry.set_text(&tab.url);
                 }
-            }
-            Self::render_tabs(state.clone());
+            });
         });
     }
 
-    fn render_tabs(state: Rc<RefCell<AppState>>) {
+    fn update_tab_label(state: Rc<RefCell<AppState>>, tab_index: usize) {
+        let st = state.borrow();
+        let Some(tab) = st.tabs.tabs().get(tab_index) else {
+            return;
+        };
+        let text = if tab.is_suspended() {
+            format!("{} 💤", truncate_title(&tab.title))
+        } else if tab.modified {
+            format!("{} •", truncate_title(&tab.title))
+        } else {
+            truncate_title(&tab.title)
+        };
+        if let Some(label) = &tab.tab_label {
+            label.set_text(&text);
+        }
+    }
+
+    fn update_chrome(state: Rc<RefCell<AppState>>) {
+        let st = state.borrow();
+        if let Some(tab) = st.tabs.active_tab() {
+            st.url_entry.set_text(&tab.url);
+        }
+        st.eco_label
+            .set_text(&format!("Mode: {}", st.energy.level().label()));
+        st.block_label
+            .set_text(&format!("Bloqués: {}", st.blocker.blocked_count()));
+    }
+
+    fn switch_to_tab(state: Rc<RefCell<AppState>>, index: usize) {
+        state.borrow_mut().tabs.set_active(index);
+        let page = state.borrow().notebook.current_page();
+        if page != Some(index as u32) {
+            state.borrow().notebook.set_current_page(Some(index as u32));
+        }
+        Self::update_chrome(state);
+    }
+
+    fn render_tabs(state: Rc<RefCell<AppState>>, structural: bool) {
+        let tab_count = state.borrow().tabs.tabs().len();
+        let page_count = state.borrow().notebook.n_pages() as usize;
+
+        if !structural && tab_count == page_count {
+            for i in 0..tab_count {
+                Self::update_tab_label(state.clone(), i);
+            }
+            Self::update_chrome(state);
+            return;
+        }
+
+        if structural {
+            let mut st = state.borrow_mut();
+            while st.notebook.n_pages() > 0 {
+                st.notebook.remove_page(Some(0));
+            }
+            for tab in st.tabs.tabs_mut().iter_mut() {
+                tab.tab_label = None;
+            }
+        }
+
         {
             let mut st = state.borrow_mut();
+            let web_context = st.web_context.clone();
             let blocker = st.blocker.clone();
             let storage = st.storage.clone();
             let state_for_tabs = state.clone();
+
             for (index, tab) in st.tabs.tabs_mut().iter_mut().enumerate() {
                 if tab.is_suspended() || tab.webview.is_some() {
                     continue;
                 }
-                let wv = create_webview(blocker.clone());
-                if !tab.url.is_empty() && tab.url != "about:blank" {
-                    wv.load_uri(&tab.url);
-                }
+                let wv = create_webview(&web_context, blocker.clone());
                 Self::connect_webview(wv.clone(), index, state_for_tabs.clone(), storage.clone());
                 tab.webview = Some(wv);
             }
         }
 
-        let mut st = state.borrow_mut();
-        let active = st.tabs.active_index();
-
-        while st.notebook.n_pages() > 0 {
-            st.notebook.remove_page(Some(0));
+        while state.borrow().notebook.n_pages() > tab_count as u32 {
+            let last = state.borrow().notebook.n_pages() - 1;
+            state.borrow().notebook.remove_page(Some(last));
         }
 
-        for (index, tab) in st.tabs.tabs().iter().enumerate() {
-            let label_text = if tab.is_suspended() {
-                format!("{} 💤", truncate_title(&tab.title))
-            } else if tab.modified {
-                format!("{} •", truncate_title(&tab.title))
+        let (notebook, current_page, url_text, eco_text, block_text) = {
+            let mut st = state.borrow_mut();
+            let active = st.tabs.active_index();
+            let web_context = st.web_context.clone();
+            let blocker = st.blocker.clone();
+            let storage = st.storage.clone();
+            let state_for_tabs = state.clone();
+
+            while (st.notebook.n_pages() as usize) < tab_count {
+                let index = st.notebook.n_pages() as usize;
+                let tab = &mut st.tabs.tabs_mut()[index];
+
+                let label = Label::new(Some(&truncate_title(&tab.title)));
+                label.set_margin_start(6);
+                label.set_margin_end(6);
+                tab.tab_label = Some(label.clone());
+
+                let page_box = GtkBox::new(Orientation::Vertical, 0);
+
+                if tab.is_suspended() {
+                    let info = Label::new(Some(&format!(
+                        "Onglet suspendu — {}\nAppuyez pour réactiver",
+                        tab.url
+                    )));
+                    info.set_margin_top(24);
+                    page_box.pack_start(&info, true, true, 0);
+                } else {
+                    if tab.webview.is_none() {
+                        let wv = create_webview(&web_context, blocker.clone());
+                        Self::connect_webview(
+                            wv.clone(),
+                            index,
+                            state_for_tabs.clone(),
+                            storage.clone(),
+                        );
+                        tab.webview = Some(wv);
+                    }
+
+                    if let Some(wv) = &tab.webview {
+                        let scrolled = ScrolledWindow::new(
+                            None::<&gtk::Adjustment>,
+                            None::<&gtk::Adjustment>,
+                        );
+                        scrolled.add(wv);
+                        scrolled.set_hexpand(true);
+                        scrolled.set_vexpand(true);
+                        page_box.pack_start(&scrolled, true, true, 0);
+
+                        let url = tab.url.clone();
+                        if !url.is_empty() && url != "about:blank" {
+                            let wv = wv.clone();
+                            glib::idle_add_local_once(move || {
+                                wv.load_uri(&url);
+                            });
+                        }
+                    }
+                }
+
+                st.notebook.append_page(&page_box, Some(&label));
+            }
+
+            let current_page = if active < tab_count {
+                Some(active as u32)
             } else {
-                truncate_title(&tab.title)
+                None
             };
 
-            let label = Label::new(Some(&label_text));
-            label.set_margin_start(6);
-            label.set_margin_end(6);
+            let url_text = st
+                .tabs
+                .active_tab()
+                .map(|t| t.url.clone())
+                .unwrap_or_default();
+            let eco_text = format!("Mode: {}", st.energy.level().label());
+            let block_text = format!("Bloqués: {}", st.blocker.blocked_count());
+            let notebook = st.notebook.clone();
 
-            let page_box = GtkBox::new(Orientation::Vertical, 0);
+            (notebook, current_page, url_text, eco_text, block_text)
+        };
 
-            if tab.is_suspended() {
-                let info = Label::new(Some(&format!(
-                    "Onglet suspendu — {}\nAppuyez pour réactiver",
-                    tab.url
-                )));
-                info.set_margin_top(24);
-                page_box.pack_start(&info, true, true, 0);
-            } else if let Some(wv) = &tab.webview {
-                let scrolled =
-                    ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
-                scrolled.add(wv);
-                scrolled.set_hexpand(true);
-                scrolled.set_vexpand(true);
-                page_box.pack_start(&scrolled, true, true, 0);
-            }
-
-            let page_index = st.notebook.append_page(&page_box, Some(&label));
-            if index == active {
-                st.notebook.set_current_page(Some(page_index));
-            }
+        {
+            let st = state.borrow();
+            st.url_entry.set_text(&url_text);
+            st.eco_label.set_text(&eco_text);
+            st.block_label.set_text(&block_text);
         }
 
-        if let Some(tab) = st.tabs.active_tab() {
-            st.url_entry.set_text(&tab.url);
+        for i in 0..tab_count {
+            Self::update_tab_label(state.clone(), i);
         }
 
-        st.eco_label
-            .set_text(&format!("Mode: {}", st.energy.level().label()));
-        st.block_label
-            .set_text(&format!("Bloqués: {}", st.blocker.blocked_count()));
+        if let Some(page) = current_page {
+            notebook.set_current_page(Some(page));
+        }
     }
 
     fn connect_webview(
@@ -357,19 +478,28 @@ impl BrowserWindow {
         let state_title = state.clone();
         wv.connect_title_notify(move |view| {
             if let Some(title) = view.title() {
-                let mut st = state_title.borrow_mut();
-                if let Some(tab) = st.tabs.tabs_mut().get_mut(tab_index) {
-                    tab.title = title.to_string();
+                {
+                    let mut st = state_title.borrow_mut();
+                    if let Some(tab) = st.tabs.tabs_mut().get_mut(tab_index) {
+                        tab.title = title.to_string();
+                    }
                 }
-                Self::render_tabs(state_title.clone());
+                Self::update_tab_label(state_title.clone(), tab_index);
             }
         });
 
         let state_load = state.clone();
         wv.connect_load_changed(move |view, event| {
-            if event == LoadEvent::Finished {
-                if let Some(uri) = view.uri() {
-                    let title = view.title().unwrap_or_else(|| uri.clone());
+            if event != LoadEvent::Finished {
+                return;
+            }
+            let uri = view.uri();
+            let title = view.title();
+            let storage = storage.clone();
+            let state_load = state_load.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(uri) = uri {
+                    let title = title.unwrap_or_else(|| uri.clone());
                     storage.add_history(&uri, &title);
                     let mut st = state_load.borrow_mut();
                     if let Some(tab) = st.tabs.tabs_mut().get_mut(tab_index) {
@@ -383,7 +513,7 @@ impl BrowserWindow {
                     st.block_label
                         .set_text(&format!("Bloqués: {}", st.blocker.blocked_count()));
                 }
-            }
+            });
         });
 
         let state_click = state.clone();
@@ -458,7 +588,7 @@ impl BrowserWindow {
 
     fn new_tab(state: Rc<RefCell<AppState>>, url: &str) {
         state.borrow_mut().tabs.create_tab(url);
-        Self::render_tabs(state);
+        Self::render_tabs(state.clone(), true);
     }
 
     fn close_current_tab(state: Rc<RefCell<AppState>>) {
@@ -467,7 +597,7 @@ impl BrowserWindow {
             if state.borrow().tabs.tabs().is_empty() {
                 state.borrow_mut().tabs.create_tab("about:blank");
             }
-            Self::render_tabs(state);
+            Self::render_tabs(state, true);
         }
     }
 
@@ -491,32 +621,31 @@ impl BrowserWindow {
         match CommandPalette::parse(input) {
             CommandAction::Open(url) => Self::navigate_to(state_cmd.clone(), &url),
             CommandAction::Tab(n) => {
-                state_cmd.borrow_mut().tabs.set_active(n);
-                Self::render_tabs(state_cmd.clone());
+                Self::switch_to_tab(state_cmd.clone(), n);
             }
             CommandAction::Suspend => {
                 let idx = state_cmd.borrow().tabs.active_index();
                 state_cmd.borrow_mut().tabs.suspend_tab(idx);
-                Self::render_tabs(state_cmd.clone());
+                Self::render_tabs(state_cmd.clone(), true);
             }
             CommandAction::SuspendAll => {
                 state_cmd.borrow_mut().tabs.suspend_all_except_active();
-                Self::render_tabs(state_cmd.clone());
+                Self::render_tabs(state_cmd.clone(), true);
             }
             CommandAction::EcoOn => {
                 state_cmd.borrow_mut().energy.set_level(EnergyLevel::Eco);
-                Self::render_tabs(state_cmd.clone());
+                Self::update_chrome(state_cmd.clone());
             }
             CommandAction::EcoOff => {
                 state_cmd.borrow_mut().energy.set_level(EnergyLevel::Normal);
-                Self::render_tabs(state_cmd.clone());
+                Self::update_chrome(state_cmd.clone());
             }
             CommandAction::EcoAggressive => {
                 state_cmd
                     .borrow_mut()
                     .energy
                     .set_level(EnergyLevel::Aggressive);
-                Self::render_tabs(state_cmd.clone());
+                Self::update_chrome(state_cmd.clone());
             }
             CommandAction::BookmarkAdd => Self::bookmark_current(state_cmd.clone()),
             CommandAction::BookmarkList => Self::show_bookmarks(state_cmd.clone()),
@@ -581,7 +710,7 @@ impl BrowserWindow {
                 for idx in indices {
                     state.borrow_mut().tabs.suspend_tab(idx);
                 }
-                Self::render_tabs(state.clone());
+                Self::render_tabs(state.clone(), true);
             }
 
             let max = state.borrow().energy.level().max_active_tabs();
@@ -610,7 +739,7 @@ impl BrowserWindow {
                         suspended += 1;
                     }
                 }
-                Self::render_tabs(state.clone());
+                Self::render_tabs(state.clone(), true);
             }
 
             glib::Continue(true)

@@ -1,3 +1,4 @@
+use gtk::Label;
 use std::time::Instant;
 use webkit2gtk::WebView;
 
@@ -19,6 +20,7 @@ pub struct Tab {
     pub scroll_y: i32,
     pub last_active: Instant,
     pub webview: Option<WebView>,
+    pub tab_label: Option<Label>,
 }
 
 impl Tab {
@@ -33,6 +35,7 @@ impl Tab {
             scroll_y: 0,
             last_active: Instant::now(),
             webview: None,
+            tab_label: None,
         }
     }
 
