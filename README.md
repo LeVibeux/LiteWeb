@@ -1,62 +1,64 @@
 # LiteWeb
 
-Navigateur web léger pour Linux, optimisé pour la consommation CPU, RAM et énergie.
+![LiteWeb logo](assets/liteweb-logo-grok.jpg)
 
-## Fonctionnalités
+Lightweight Linux web browser optimized for CPU, memory, and energy usage.
 
-- Navigation classique (retour, avant, recharger, onglets)
-- Blocage des navigations vers des domaines publicitaires et de traçage (~50 domaines à fort impact)
-- Mode économie d'énergie (Normal / Éco / Agressif) avec suspension automatique des onglets inactifs
-- Historique et favoris (SQLite local)
-- Raccourcis clavier + palette de commandes (`:`)
+## Features
 
-## Prérequis (Linux)
+- Standard navigation (back, forward, reload, tabs)
+- Blocks navigation to advertising and tracking domains (~50 high-impact domains)
+- Energy-saving modes (Normal / Eco / Aggressive) with automatic suspension of inactive tabs
+- History and bookmarks (local SQLite)
+- Keyboard shortcuts and a command palette (`:`)
+
+## Requirements (Linux)
 
 ```bash
 sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev build-essential
 ```
 
-## Compilation
+## Build
 
 ```bash
 cargo build --release
 ```
 
-Le binaire se trouve dans `target/release/liteweb`.
+The binary is located at `target/release/liteweb`.
 
-## Lancement
+## Run
 
 ```bash
 ./target/release/liteweb
 ```
 
-Données utilisateur : `~/.config/liteweb/liteweb.db`
+User data: `~/.config/liteweb/liteweb.db`
 
-## Sécurité
+## Security
 
-- Navigation limitée à `http://`, `https://` et `about:blank` ; les schémas locaux ou actifs (`file:`, `data:`, `javascript:`) sont refusés.
-- Permissions Web (caméra, micro, géolocalisation, notifications) et sélecteurs de fichiers refusés par défaut.
-- Sandbox WebKit activée, erreurs TLS bloquantes et automatisation distante désactivée.
-- Base SQLite en mode `0600` et répertoires de profil en mode `0700` sur Unix.
+- Navigation is limited to `http://`, `https://`, and `about:blank`; local or active schemes (`file:`, `data:`, `javascript:`) are rejected.
+- Web permissions (camera, microphone, geolocation, notifications) and file choosers are denied by default.
+- WebKit sandboxing is enabled, TLS errors are blocking, and remote automation is disabled.
+- The SQLite database uses mode `0600` and profile directories use mode `0700` on Unix.
 
-Le filtre intégré agit sur les navigations. Il ne remplace pas un bloqueur de sous-ressources complet de type EasyList.
+The built-in filter applies to navigations. It is not a complete subresource blocker such as EasyList.
 
-## Raccourcis clavier
+## Keyboard shortcuts
 
-| Raccourci | Action |
-|-----------|--------|
-| `Ctrl+L` | Focus barre d'adresse |
-| `Ctrl+T` | Nouvel onglet |
-| `Ctrl+W` | Fermer onglet |
-| `Ctrl+Tab` | Onglet suivant |
-| `Ctrl+Shift+Tab` | Onglet précédent |
-| `Ctrl+R` / `F5` | Recharger |
-| `Alt+←` / `Alt+→` | Retour / Avant |
-| `Ctrl+D` | Ajouter aux favoris |
-| `Ctrl+Shift+E` | Changer mode énergie |
-| `:` | Palette de commandes |
+| Shortcut | Action |
+|---|---|
+| `Ctrl+L` | Focus the address bar |
+| `Ctrl+T` | New tab |
+| `Ctrl+W` | Close tab |
+| `Ctrl+Tab` | Next tab |
+| `Ctrl+Shift+Tab` | Previous tab |
+| `Ctrl+R` / `F5` | Reload |
+| `Alt+←` / `Alt+→` | Back / forward |
+| `Ctrl+D` | Add a bookmark |
+| `Ctrl+Shift+E` | Change energy mode |
+| `:` | Command palette |
 
-## Commandes
+## Commands
 
 ```
 :open example.com
@@ -68,25 +70,29 @@ Le filtre intégré agit sur les navigations. Il ne remplace pas un bloqueur de 
 :history
 ```
 
-## Modes énergie
+## Energy modes
 
-| Mode | Suspension après | Onglets actifs max |
-|------|------------------|--------------------|
+| Mode | Suspend after | Maximum active tabs |
+|------|---------------|---------------------|
 | Normal | 10 min | 20 |
-| Éco | 3 min | 10 |
-| Agressif | 1 min | 5 |
+| Eco | 3 min | 10 |
+| Aggressive | 1 min | 5 |
 
-Les onglets suspendus libèrent leur WebView (gain RAM significatif) et se réactivent au clic.
+Suspended tabs release their WebView (a significant memory saving) and resume when clicked.
 
 ## Architecture
 
 - **Rust** + **WebKitGTK 4.1** + **GTK3**
-- Moteur WebKit partagé avec le système (plus léger que Chromium)
-- Cache désactivé, prefetch DNS désactivé, autoplay média bloqué par défaut
+- System-shared WebKit engine (lighter than Chromium)
+- Cache disabled, DNS prefetch disabled, and media autoplay blocked by default
+
+## Logo
+
+The logo was generated with **Grok Image** and cropped to a 1:1 aspect ratio for the LiteWeb icon.
 
 ## Roadmap
 
-- [ ] Téléchargements de fichiers
-- [ ] Mise à jour automatique des filtres EasyList
-- [ ] Port Windows (WebView2) / macOS (WKWebView)
-- [ ] GTK4 + libadwaita (quand disponible sur la cible)
+- [ ] File downloads
+- [ ] Automatic EasyList filter updates
+- [ ] Windows (WebView2) / macOS (WKWebView) ports
+- [ ] GTK4 + libadwaita (when available on the target platform)

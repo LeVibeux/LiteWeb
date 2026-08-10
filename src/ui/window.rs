@@ -2,9 +2,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use gdk_pixbuf::prelude::*;
+use gdk_pixbuf::{InterpType, Pixbuf, PixbufLoader};
 use gtk::prelude::*;
 use gtk::{
-    Align, Application, ApplicationWindow, Box as GtkBox, Button, Entry, Inhibit, Label,
+    Align, Application, ApplicationWindow, Box as GtkBox, Button, Entry, Image, Inhibit, Label,
     MessageDialog, Notebook, Orientation, ScrolledWindow, Separator,
 };
 use pango::EllipsizeMode;
@@ -16,6 +18,7 @@ const KEYBAR_URL: &str =
     "Entrée → naviguer  |  Ctrl+L focus  |  : → barre commande  |  Échap → annuler";
 const KEYBAR_COMMAND: &str =
     ":open :tab new|next|prev|N :suspend :suspend-all :eco on|off|aggressive :bookmark :history  |  Entrée → exécuter  |  Échap → annuler";
+const LOGO_BYTES: &[u8] = include_bytes!("../../assets/liteweb-logo-grok.jpg");
 
 use crate::adblock::Blocker;
 use crate::browser::{create_web_context, create_webview, TabManager};
@@ -72,6 +75,9 @@ impl BrowserWindow {
             .default_width(1200)
             .default_height(800)
             .build();
+        if let Some(logo) = Self::logo_pixbuf(64) {
+            window.set_icon(Some(&logo));
+        }
 
         let root = GtkBox::new(Orientation::Vertical, 0);
 
@@ -133,6 +139,9 @@ impl BrowserWindow {
         bar.set_margin_top(4);
         bar.set_margin_bottom(4);
 
+        let logo = Image::from_pixbuf(Self::logo_pixbuf(28).as_ref());
+        logo.set_tooltip_text(Some("Logo généré avec Grok Image"));
+
         let back = Button::with_label("←");
         back.set_tooltip_text(Some("Retour (Alt+←)"));
 
@@ -156,6 +165,7 @@ impl BrowserWindow {
         let eco_label = Label::new(Some("Mode: Normal"));
         let block_label = Label::new(Some("Bloqués: 0"));
 
+        bar.pack_start(&logo, false, false, 0);
         bar.pack_start(&back, false, false, 0);
         bar.pack_start(&forward, false, false, 0);
         bar.pack_start(&reload, false, false, 0);
@@ -225,6 +235,15 @@ impl BrowserWindow {
             command_entry,
             hints_label,
         }
+    }
+
+    fn logo_pixbuf(size: i32) -> Option<Pixbuf> {
+        let loader = PixbufLoader::new();
+        loader.write(LOGO_BYTES).ok()?;
+        loader.close().ok()?;
+        loader
+            .pixbuf()?
+            .scale_simple(size, size, InterpType::Bilinear)
     }
 
     fn apply_command_bar_style() {
