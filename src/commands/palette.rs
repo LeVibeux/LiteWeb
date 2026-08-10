@@ -2,6 +2,9 @@
 pub enum CommandAction {
     Open(String),
     Tab(usize),
+    TabNew(String),
+    TabNext,
+    TabPrev,
     Suspend,
     SuspendAll,
     EcoOn,
@@ -31,8 +34,29 @@ impl CommandPalette {
         match verb.as_str() {
             "open" | "o" => CommandAction::Open(Self::normalize_url(arg)),
             "tab" | "t" => {
-                let n = arg.parse::<usize>().unwrap_or(1);
-                CommandAction::Tab(n.saturating_sub(1))
+                let mut words = arg.split_whitespace();
+                let first = words.next().unwrap_or("").to_lowercase();
+                match first.as_str() {
+                    "" => CommandAction::Unknown(cmd.to_string()),
+                    "new" => {
+                        let rest: String = words.collect::<Vec<_>>().join(" ");
+                        let url = if rest.is_empty() {
+                            "about:blank".to_string()
+                        } else {
+                            Self::normalize_url(&rest)
+                        };
+                        CommandAction::TabNew(url)
+                    }
+                    "next" => CommandAction::TabNext,
+                    "prev" => CommandAction::TabPrev,
+                    _ => {
+                        if let Ok(n) = first.parse::<usize>() {
+                            CommandAction::Tab(n.saturating_sub(1))
+                        } else {
+                            CommandAction::Unknown(cmd.to_string())
+                        }
+                    }
+                }
             }
             "suspend" => CommandAction::Suspend,
             "suspend-all" | "suspendall" => CommandAction::SuspendAll,
@@ -62,16 +86,27 @@ impl CommandPalette {
         } else if input.contains('.') && !input.contains(' ') {
             format!("https://{input}")
         } else {
-            format!(
-                "https://duckduckgo.com/?q={}",
-                urlencoding_like(input)
-            )
+            format!("https://duckduckgo.com/?q={}", encode_query(input))
         }
     }
 }
 
-fn urlencoding_like(s: &str) -> String {
-    s.replace(' ', "+")
+fn encode_query(input: &str) -> String {
+    url::form_urlencoded::byte_serialize(input.as_bytes()).collect()
+}
+
+pub(crate) fn is_safe_navigation_url(input: &str) -> bool {
+    if input == "about:blank" {
+        return true;
+    }
+
+    let Ok(parsed) = url::Url::parse(input) else {
+        return false;
+    };
+    matches!(parsed.scheme(), "http" | "https")
+        && parsed.host_str().is_some()
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
 }
 
 #[cfg(test)]
@@ -88,7 +123,10 @@ mod tests {
 
     #[test]
     fn parses_suspend_all() {
-        assert_eq!(CommandPalette::parse(":suspend-all"), CommandAction::SuspendAll);
+        assert_eq!(
+            CommandPalette::parse(":suspend-all"),
+            CommandAction::SuspendAll
+        );
     }
 
     #[test]
@@ -98,5 +136,68 @@ mod tests {
             CommandAction::Open(url) => assert!(url.contains("duckduckgo.com")),
             _ => panic!("expected open/search"),
         }
+    }
+
+    #[test]
+    fn parses_tab_new_blank() {
+        assert_eq!(
+            CommandPalette::parse(":tab new"),
+            CommandAction::TabNew("about:blank".into())
+        );
+    }
+
+    #[test]
+    fn parses_tab_new_url() {
+        assert_eq!(
+            CommandPalette::parse(":tab new example.com"),
+            CommandAction::TabNew("https://example.com".into())
+        );
+    }
+
+    #[test]
+    fn parses_tab_next_prev() {
+        assert_eq!(CommandPalette::parse(":tab next"), CommandAction::TabNext);
+        assert_eq!(CommandPalette::parse(":tab prev"), CommandAction::TabPrev);
+    }
+
+    #[test]
+    fn parses_t_alias_for_tab_new() {
+        assert_eq!(
+            CommandPalette::parse(":t new"),
+            CommandAction::TabNew("about:blank".into())
+        );
+    }
+
+    #[test]
+    fn parses_tab_index_still_works() {
+        assert_eq!(CommandPalette::parse(":tab 2"), CommandAction::Tab(1));
+    }
+
+    #[test]
+    fn tab_empty_is_unknown() {
+        match CommandPalette::parse(":tab") {
+            CommandAction::Unknown(_) => {}
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn search_query_is_percent_encoded() {
+        assert_eq!(
+            CommandPalette::parse("rust & sécurité"),
+            CommandAction::Open("https://duckduckgo.com/?q=rust+%26+s%C3%A9curit%C3%A9".into())
+        );
+    }
+
+    #[test]
+    fn navigation_allowlist_rejects_local_and_active_schemes() {
+        assert!(is_safe_navigation_url("https://example.com/path"));
+        assert!(is_safe_navigation_url("http://localhost:8080"));
+        assert!(is_safe_navigation_url("about:blank"));
+        assert!(!is_safe_navigation_url("file:///etc/passwd"));
+        assert!(!is_safe_navigation_url("javascript:alert(1)"));
+        assert!(!is_safe_navigation_url("data:text/html,hello"));
+        assert!(!is_safe_navigation_url("about:config"));
+        assert!(!is_safe_navigation_url("https://user:secret@example.com"));
     }
 }

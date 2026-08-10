@@ -3,19 +3,23 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gtk::prelude::*;
-use gtk::{Align, Application, ApplicationWindow, Box as GtkBox, Button, Entry, Inhibit, Label, MessageDialog, Notebook, Orientation, ScrolledWindow, Separator};
+use gtk::{
+    Align, Application, ApplicationWindow, Box as GtkBox, Button, Entry, Inhibit, Label,
+    MessageDialog, Notebook, Orientation, ScrolledWindow, Separator,
+};
 use pango::EllipsizeMode;
 use webkit2gtk::{LoadEvent, WebView, WebViewExt};
 
 const KEYBAR_NORMAL: &str =
     "Ctrl+L URL  |  : commandes  |  Ctrl+T onglet  |  Ctrl+W fermer  |  Ctrl+Tab suivant  |  Alt+←/→ nav  |  F5 recharger  |  Ctrl+D favori  |  Ctrl+Shift+E éco";
-const KEYBAR_URL: &str = "Entrée → naviguer  |  Ctrl+L focus  |  : → barre commande  |  Échap → annuler";
+const KEYBAR_URL: &str =
+    "Entrée → naviguer  |  Ctrl+L focus  |  : → barre commande  |  Échap → annuler";
 const KEYBAR_COMMAND: &str =
-    ":open :tab :suspend :suspend-all :eco on|off|aggressive :bookmark :history  |  Entrée → exécuter  |  Échap → annuler";
+    ":open :tab new|next|prev|N :suspend :suspend-all :eco on|off|aggressive :bookmark :history  |  Entrée → exécuter  |  Échap → annuler";
 
 use crate::adblock::Blocker;
 use crate::browser::{create_web_context, create_webview, TabManager};
-use crate::commands::{CommandAction, CommandPalette};
+use crate::commands::{is_safe_navigation_url, CommandAction, CommandPalette};
 use crate::energy::{EnergyLevel, EnergyManager};
 use crate::storage::Storage;
 
@@ -186,7 +190,9 @@ impl BrowserWindow {
         hints_label.set_margin_end(8);
         hints_label.set_margin_top(3);
         hints_label.set_xalign(0.0);
-        hints_label.style_context().add_class("liteweb-commandbar-hints");
+        hints_label
+            .style_context()
+            .add_class("liteweb-commandbar-hints");
 
         let input_row = GtkBox::new(Orientation::Horizontal, 4);
         input_row.set_margin_start(6);
@@ -194,13 +200,17 @@ impl BrowserWindow {
         input_row.set_margin_bottom(4);
 
         let prompt = Label::new(Some(":"));
-        prompt.style_context().add_class("liteweb-commandbar-prompt");
+        prompt
+            .style_context()
+            .add_class("liteweb-commandbar-prompt");
         prompt.set_width_chars(1);
 
         let command_entry = Entry::new();
-        command_entry.set_placeholder_text(Some("open example.com  |  tab 2  |  eco on"));
+        command_entry.set_placeholder_text(Some("open example.com  |  tab new [url]  |  tab next"));
         command_entry.set_hexpand(true);
-        command_entry.style_context().add_class("liteweb-commandbar-entry");
+        command_entry
+            .style_context()
+            .add_class("liteweb-commandbar-entry");
 
         input_row.pack_start(&prompt, false, false, 0);
         input_row.pack_start(&command_entry, true, true, 0);
@@ -246,10 +256,7 @@ impl BrowserWindow {
     fn update_hints(state: Rc<RefCell<AppState>>) {
         let (url_focused, cmd_focused) = {
             let st = state.borrow();
-            (
-                st.url_entry.has_focus(),
-                st.command_entry.has_focus(),
-            )
+            (st.url_entry.has_focus(), st.command_entry.has_focus())
         };
         let hint = if cmd_focused {
             KEYBAR_COMMAND
@@ -287,39 +294,51 @@ impl BrowserWindow {
         });
 
         let state_focus = state.clone();
-        command_bar.command_entry.connect_focus_in_event(move |_, _| {
-            Self::set_hints(state_focus.clone(), KEYBAR_COMMAND);
-            Inhibit(false)
-        });
+        command_bar
+            .command_entry
+            .connect_focus_in_event(move |_, _| {
+                Self::set_hints(state_focus.clone(), KEYBAR_COMMAND);
+                Inhibit(false)
+            });
 
         let state_blur = state.clone();
-        command_bar.command_entry.connect_focus_out_event(move |_, _| {
-            let state = state_blur.clone();
-            glib::idle_add_local_once(move || {
-                Self::update_hints(state);
+        command_bar
+            .command_entry
+            .connect_focus_out_event(move |_, _| {
+                let state = state_blur.clone();
+                glib::idle_add_local_once(move || {
+                    Self::update_hints(state);
+                });
+                Inhibit(false)
             });
-            Inhibit(false)
-        });
 
         let state_url_focus = state.clone();
-        state.borrow().url_entry.connect_focus_in_event(move |_, _| {
-            Self::set_hints(state_url_focus.clone(), KEYBAR_URL);
-            Inhibit(false)
-        });
+        state
+            .borrow()
+            .url_entry
+            .connect_focus_in_event(move |_, _| {
+                Self::set_hints(state_url_focus.clone(), KEYBAR_URL);
+                Inhibit(false)
+            });
 
         let state_url_blur = state.clone();
-        state.borrow().url_entry.connect_focus_out_event(move |_, _| {
-            let state = state_url_blur.clone();
-            glib::idle_add_local_once(move || {
-                Self::update_hints(state);
+        state
+            .borrow()
+            .url_entry
+            .connect_focus_out_event(move |_, _| {
+                let state = state_url_blur.clone();
+                glib::idle_add_local_once(move || {
+                    Self::update_hints(state);
+                });
+                Inhibit(false)
             });
-            Inhibit(false)
-        });
     }
 
     fn wire_toolbar(toolbar: &ToolbarParts, state: Rc<RefCell<AppState>>) {
         let state_back = state.clone();
-        toolbar.back.connect_clicked(move |_| Self::navigate_back(state_back.clone()));
+        toolbar
+            .back
+            .connect_clicked(move |_| Self::navigate_back(state_back.clone()));
 
         let state_fwd = state.clone();
         toolbar
@@ -528,12 +547,12 @@ impl BrowserWindow {
             let storage = st.storage.clone();
             let state_for_tabs = state.clone();
 
-            for (index, tab) in st.tabs.tabs_mut().iter_mut().enumerate() {
+            for tab in st.tabs.tabs_mut().iter_mut() {
                 if tab.is_suspended() || tab.webview.is_some() {
                     continue;
                 }
                 let wv = create_webview(&web_context, blocker.clone());
-                Self::connect_webview(wv.clone(), index, state_for_tabs.clone(), storage.clone());
+                Self::connect_webview(wv.clone(), tab.id, state_for_tabs.clone(), storage.clone());
                 tab.webview = Some(wv);
             }
         }
@@ -574,7 +593,7 @@ impl BrowserWindow {
                         let wv = create_webview(&web_context, blocker.clone());
                         Self::connect_webview(
                             wv.clone(),
-                            index,
+                            tab.id,
                             state_for_tabs.clone(),
                             storage.clone(),
                         );
@@ -582,17 +601,15 @@ impl BrowserWindow {
                     }
 
                     if let Some(wv) = &tab.webview {
-                        let scrolled = ScrolledWindow::new(
-                            None::<&gtk::Adjustment>,
-                            None::<&gtk::Adjustment>,
-                        );
+                        let scrolled =
+                            ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
                         scrolled.add(wv);
                         scrolled.set_hexpand(true);
                         scrolled.set_vexpand(true);
                         page_box.pack_start(&scrolled, true, true, 0);
 
                         let url = tab.url.clone();
-                        if !url.is_empty() && url != "about:blank" {
+                        if is_safe_navigation_url(&url) && url != "about:blank" {
                             let wv = wv.clone();
                             glib::idle_add_local_once(move || {
                                 wv.load_uri(&url);
@@ -602,6 +619,8 @@ impl BrowserWindow {
                 }
 
                 st.notebook.append_page(&page_box, Some(&label));
+                page_box.show_all();
+                label.show();
             }
 
             let current_page = if active < tab_count {
@@ -638,22 +657,21 @@ impl BrowserWindow {
         }
     }
 
-    fn connect_webview(
-        wv: WebView,
-        tab_index: usize,
-        state: Rc<RefCell<AppState>>,
-        storage: Storage,
-    ) {
+    fn connect_webview(wv: WebView, tab_id: usize, state: Rc<RefCell<AppState>>, storage: Storage) {
         let state_title = state.clone();
         wv.connect_title_notify(move |view| {
             if let Some(title) = view.title() {
                 {
                     let mut st = state_title.borrow_mut();
-                    if let Some(tab) = st.tabs.tabs_mut().get_mut(tab_index) {
+                    if let Some(tab_index) = st.tabs.index_of_id(tab_id) {
+                        let tab = &mut st.tabs.tabs_mut()[tab_index];
                         tab.title = title.to_string();
                     }
                 }
-                Self::update_tab_label(state_title.clone(), tab_index);
+                let tab_index = { state_title.borrow().tabs.index_of_id(tab_id) };
+                if let Some(tab_index) = tab_index {
+                    Self::update_tab_label(state_title.clone(), tab_index);
+                }
             }
         });
 
@@ -668,15 +686,19 @@ impl BrowserWindow {
             let state_load = state_load.clone();
             glib::idle_add_local_once(move || {
                 if let Some(uri) = uri {
+                    if !is_safe_navigation_url(&uri) {
+                        return;
+                    }
                     let title = title.unwrap_or_else(|| uri.clone());
                     storage.add_history(&uri, &title);
                     let mut st = state_load.borrow_mut();
-                    if let Some(tab) = st.tabs.tabs_mut().get_mut(tab_index) {
+                    if let Some(tab_index) = st.tabs.index_of_id(tab_id) {
+                        let tab = &mut st.tabs.tabs_mut()[tab_index];
                         tab.url = uri.to_string();
                         tab.title = title.to_string();
                         tab.modified = false;
                     }
-                    if st.tabs.active_index() == tab_index {
+                    if st.tabs.active_tab().map(|tab| tab.id) == Some(tab_id) {
                         st.url_entry.set_text(&uri);
                     }
                     st.block_label
@@ -705,6 +727,14 @@ impl BrowserWindow {
             CommandAction::Open(u) => u,
             _ => input.to_string(),
         };
+
+        if !is_safe_navigation_url(&url) {
+            Self::show_message(
+                "Navigation refusée",
+                "LiteWeb autorise uniquement HTTP, HTTPS et about:blank.",
+            );
+            return;
+        }
 
         let mut st = state.borrow_mut();
         let idx = st.tabs.active_index();
@@ -756,8 +786,16 @@ impl BrowserWindow {
     }
 
     fn new_tab(state: Rc<RefCell<AppState>>, url: &str) {
+        if !is_safe_navigation_url(url) {
+            Self::show_message(
+                "Navigation refusée",
+                "LiteWeb autorise uniquement HTTP, HTTPS et about:blank.",
+            );
+            return;
+        }
         state.borrow_mut().tabs.create_tab(url);
-        Self::render_tabs(state.clone(), true);
+        // Incremental append — do not structural-rebuild (that destroys current tabs).
+        Self::render_tabs(state.clone(), false);
     }
 
     fn close_current_tab(state: Rc<RefCell<AppState>>) {
@@ -792,6 +830,23 @@ impl BrowserWindow {
             CommandAction::Tab(n) => {
                 Self::switch_to_tab(state_cmd.clone(), n);
             }
+            CommandAction::TabNew(url) => Self::new_tab(state_cmd.clone(), &url),
+            CommandAction::TabNext => {
+                let idx = {
+                    let mut st = state_cmd.borrow_mut();
+                    st.tabs.next_tab();
+                    st.tabs.active_index()
+                };
+                Self::switch_to_tab(state_cmd.clone(), idx);
+            }
+            CommandAction::TabPrev => {
+                let idx = {
+                    let mut st = state_cmd.borrow_mut();
+                    st.tabs.prev_tab();
+                    st.tabs.active_index()
+                };
+                Self::switch_to_tab(state_cmd.clone(), idx);
+            }
             CommandAction::Suspend => {
                 let idx = state_cmd.borrow().tabs.active_index();
                 state_cmd.borrow_mut().tabs.suspend_tab(idx);
@@ -819,9 +874,10 @@ impl BrowserWindow {
             CommandAction::BookmarkAdd => Self::bookmark_current(state_cmd.clone()),
             CommandAction::BookmarkList => Self::show_bookmarks(state_cmd.clone()),
             CommandAction::History => Self::show_history(state_cmd.clone()),
-            CommandAction::DownloadList => {
-                Self::show_message("Téléchargements", "Gestion des téléchargements — bientôt disponible.")
-            }
+            CommandAction::DownloadList => Self::show_message(
+                "Téléchargements",
+                "Gestion des téléchargements — bientôt disponible.",
+            ),
             CommandAction::Unknown(cmd) => {
                 Self::show_message("Commande inconnue", &format!("'{cmd}' n'est pas reconnue."));
             }

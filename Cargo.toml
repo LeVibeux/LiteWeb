@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 gtk = { version = "0.16", features = ["v3_24"] }
-webkit2gtk = { version = "0.19", features = ["v2_6"] }
+webkit2gtk = { version = "0.19", features = ["v2_38"] }
 gio = "0.16"
 glib = "0.16"
 gdk = "0.16"
