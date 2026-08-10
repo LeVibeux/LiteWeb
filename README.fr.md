@@ -1,6 +1,8 @@
-# LiteWeb
+<p align="center">
+  <img src="assets/liteweb-logo-grok.jpg" alt="Logo LiteWeb" width="96">
+</p>
 
-![Logo LiteWeb](assets/liteweb-logo-grok.jpg)
+# LiteWeb
 
 Navigateur web léger pour Linux, optimisé pour la consommation de processeur, de mémoire et d'énergie.
 

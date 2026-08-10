@@ -1,6 +1,8 @@
-# LiteWeb
+<p align="center">
+  <img src="assets/liteweb-logo-grok.jpg" alt="LiteWeb logo" width="96">
+</p>
 
-![LiteWeb logo](assets/liteweb-logo-grok.jpg)
+# LiteWeb
 
 Lightweight Linux web browser optimized for CPU, memory, and energy usage.
 
