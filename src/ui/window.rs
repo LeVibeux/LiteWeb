@@ -3,14 +3,27 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gtk::prelude::*;
-use gtk::{Application, ApplicationWindow, Box as GtkBox, Button, Entry, Inhibit, Label, MessageDialog, Notebook, Orientation, ScrolledWindow, Separator};
+use gtk::{Align, Application, ApplicationWindow, Box as GtkBox, Button, Entry, Inhibit, Label, MessageDialog, Notebook, Orientation, ScrolledWindow, Separator};
+use pango::EllipsizeMode;
 use webkit2gtk::{LoadEvent, WebView, WebViewExt};
+
+const KEYBAR_NORMAL: &str =
+    "Ctrl+L URL  |  : commandes  |  Ctrl+T onglet  |  Ctrl+W fermer  |  Ctrl+Tab suivant  |  Alt+←/→ nav  |  F5 recharger  |  Ctrl+D favori  |  Ctrl+Shift+E éco";
+const KEYBAR_URL: &str = "Entrée → naviguer  |  Ctrl+L focus  |  : → barre commande  |  Échap → annuler";
+const KEYBAR_COMMAND: &str =
+    ":open :tab :suspend :suspend-all :eco on|off|aggressive :bookmark :history  |  Entrée → exécuter  |  Échap → annuler";
 
 use crate::adblock::Blocker;
 use crate::browser::{create_web_context, create_webview, TabManager};
 use crate::commands::{CommandAction, CommandPalette};
 use crate::energy::{EnergyLevel, EnergyManager};
 use crate::storage::Storage;
+
+struct CommandBarParts {
+    bar: GtkBox,
+    command_entry: Entry,
+    hints_label: Label,
+}
 
 struct ToolbarParts {
     bar: GtkBox,
@@ -37,8 +50,10 @@ struct AppState {
     web_context: webkit2gtk::WebContext,
     notebook: Notebook,
     url_entry: Entry,
+    command_entry: Entry,
     eco_label: Label,
     block_label: Label,
+    hints_label: Label,
 }
 
 impl BrowserWindow {
@@ -68,8 +83,11 @@ impl BrowserWindow {
         let content_box = GtkBox::new(Orientation::Vertical, 0);
         content_box.pack_start(&notebook, true, true, 0);
 
+        let command_bar = Self::build_command_bar();
+
         root.pack_start(&toolbar.bar, false, false, 0);
         root.pack_start(&content_box, true, true, 0);
+        root.pack_start(&command_bar.bar, false, false, 0);
 
         window.add(&root);
 
@@ -84,11 +102,14 @@ impl BrowserWindow {
             web_context,
             notebook: notebook.clone(),
             url_entry: url_entry.clone(),
+            command_entry: command_bar.command_entry.clone(),
             eco_label: eco_label.clone(),
             block_label: block_label.clone(),
+            hints_label: command_bar.hints_label.clone(),
         }));
 
         Self::wire_toolbar(&toolbar, state.clone());
+        Self::wire_command_bar(&command_bar, state.clone());
         Self::wire_shortcuts(&window, state.clone());
         Self::wire_notebook(&notebook, state.clone());
         Self::render_tabs(state.clone(), true);
@@ -118,7 +139,7 @@ impl BrowserWindow {
         reload.set_tooltip_text(Some("Recharger (F5)"));
 
         let url_entry = Entry::new();
-        url_entry.set_placeholder_text(Some("Adresse ou recherche — Ctrl+L"));
+        url_entry.set_placeholder_text(Some("https://…"));
         url_entry.set_hexpand(true);
         url_entry.set_input_purpose(gtk::InputPurpose::Url);
 
@@ -154,6 +175,148 @@ impl BrowserWindow {
         }
     }
 
+    fn build_command_bar() -> CommandBarParts {
+        let bar = GtkBox::new(Orientation::Vertical, 0);
+        bar.style_context().add_class("liteweb-commandbar");
+
+        let hints_label = Label::new(Some(KEYBAR_NORMAL));
+        hints_label.set_halign(Align::Start);
+        hints_label.set_ellipsize(EllipsizeMode::End);
+        hints_label.set_margin_start(8);
+        hints_label.set_margin_end(8);
+        hints_label.set_margin_top(3);
+        hints_label.set_xalign(0.0);
+        hints_label.style_context().add_class("liteweb-commandbar-hints");
+
+        let input_row = GtkBox::new(Orientation::Horizontal, 4);
+        input_row.set_margin_start(6);
+        input_row.set_margin_end(6);
+        input_row.set_margin_bottom(4);
+
+        let prompt = Label::new(Some(":"));
+        prompt.style_context().add_class("liteweb-commandbar-prompt");
+        prompt.set_width_chars(1);
+
+        let command_entry = Entry::new();
+        command_entry.set_placeholder_text(Some("open example.com  |  tab 2  |  eco on"));
+        command_entry.set_hexpand(true);
+        command_entry.style_context().add_class("liteweb-commandbar-entry");
+
+        input_row.pack_start(&prompt, false, false, 0);
+        input_row.pack_start(&command_entry, true, true, 0);
+
+        bar.pack_start(&hints_label, false, false, 0);
+        bar.pack_start(&input_row, false, false, 0);
+
+        Self::apply_command_bar_style();
+
+        CommandBarParts {
+            bar,
+            command_entry,
+            hints_label,
+        }
+    }
+
+    fn apply_command_bar_style() {
+        let provider = gtk::CssProvider::new();
+        if provider
+            .load_from_data(
+                b".liteweb-commandbar { background-color: #1e1e1e; border-top: 1px solid #333; } \
+                  .liteweb-commandbar-hints { color: #666; font-family: monospace; font-size: 10px; } \
+                  .liteweb-commandbar-prompt { color: #7ec8e3; font-family: monospace; font-size: 13px; font-weight: bold; } \
+                  .liteweb-commandbar-entry { color: #c8c8c8; font-family: monospace; font-size: 13px; background-color: #2a2a2a; }",
+            )
+            .is_err()
+        {
+            return;
+        }
+        if let Some(screen) = gdk::Screen::default() {
+            gtk::StyleContext::add_provider_for_screen(
+                &screen,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+    }
+
+    fn set_hints(state: Rc<RefCell<AppState>>, hint: &str) {
+        state.borrow().hints_label.set_text(hint);
+    }
+
+    fn update_hints(state: Rc<RefCell<AppState>>) {
+        let (url_focused, cmd_focused) = {
+            let st = state.borrow();
+            (
+                st.url_entry.has_focus(),
+                st.command_entry.has_focus(),
+            )
+        };
+        let hint = if cmd_focused {
+            KEYBAR_COMMAND
+        } else if url_focused {
+            KEYBAR_URL
+        } else {
+            KEYBAR_NORMAL
+        };
+        Self::set_hints(state, hint);
+    }
+
+    fn focus_command_bar(state: Rc<RefCell<AppState>>) {
+        let entry = state.borrow().command_entry.clone();
+        entry.grab_focus();
+        if entry.text().is_empty() {
+            entry.set_position(0);
+        }
+        Self::set_hints(state, KEYBAR_COMMAND);
+    }
+
+    fn wire_command_bar(command_bar: &CommandBarParts, state: Rc<RefCell<AppState>>) {
+        let state_cmd = state.clone();
+        command_bar.command_entry.connect_activate(move |entry| {
+            let text = entry.text().to_string();
+            if !text.trim().is_empty() {
+                let cmd = if text.starts_with(':') {
+                    text
+                } else {
+                    format!(":{text}")
+                };
+                Self::run_command(state_cmd.clone(), &cmd);
+            }
+            entry.set_text("");
+            Self::set_hints(state_cmd.clone(), KEYBAR_NORMAL);
+        });
+
+        let state_focus = state.clone();
+        command_bar.command_entry.connect_focus_in_event(move |_, _| {
+            Self::set_hints(state_focus.clone(), KEYBAR_COMMAND);
+            Inhibit(false)
+        });
+
+        let state_blur = state.clone();
+        command_bar.command_entry.connect_focus_out_event(move |_, _| {
+            let state = state_blur.clone();
+            glib::idle_add_local_once(move || {
+                Self::update_hints(state);
+            });
+            Inhibit(false)
+        });
+
+        let state_url_focus = state.clone();
+        state.borrow().url_entry.connect_focus_in_event(move |_, _| {
+            Self::set_hints(state_url_focus.clone(), KEYBAR_URL);
+            Inhibit(false)
+        });
+
+        let state_url_blur = state.clone();
+        state.borrow().url_entry.connect_focus_out_event(move |_, _| {
+            let state = state_url_blur.clone();
+            glib::idle_add_local_once(move || {
+                Self::update_hints(state);
+            });
+            Inhibit(false)
+        });
+    }
+
     fn wire_toolbar(toolbar: &ToolbarParts, state: Rc<RefCell<AppState>>) {
         let state_back = state.clone();
         toolbar.back.connect_clicked(move |_| Self::navigate_back(state_back.clone()));
@@ -180,12 +343,7 @@ impl BrowserWindow {
 
         let state_submit = state.clone();
         state.borrow().url_entry.connect_activate(move |entry| {
-            let text = entry.text().to_string();
-            if text.starts_with(':') {
-                Self::run_command(state_submit.clone(), &text);
-            } else {
-                Self::navigate_to(state_submit.clone(), &text);
-            }
+            Self::navigate_to(state_submit.clone(), &entry.text().to_string());
         });
     }
 
@@ -255,11 +413,22 @@ impl BrowserWindow {
                 return Inhibit(true);
             }
             if key == gtk::gdk::keys::constants::colon {
-                let entry = state.borrow().url_entry.clone();
-                entry.set_text(":");
-                entry.grab_focus();
-                entry.set_position(-1);
+                Self::focus_command_bar(state.clone());
                 return Inhibit(true);
+            }
+            if key == gtk::gdk::keys::constants::Escape {
+                let cmd = state.borrow().command_entry.clone();
+                let url = state.borrow().url_entry.clone();
+                if cmd.has_focus() {
+                    cmd.set_text("");
+                    Self::set_hints(state.clone(), KEYBAR_NORMAL);
+                    return Inhibit(true);
+                }
+                if url.has_focus() {
+                    url.set_text("");
+                    Self::set_hints(state.clone(), KEYBAR_NORMAL);
+                    return Inhibit(true);
+                }
             }
 
             Inhibit(false)
@@ -657,7 +826,7 @@ impl BrowserWindow {
                 Self::show_message("Commande inconnue", &format!("'{cmd}' n'est pas reconnue."));
             }
         }
-        state.borrow().url_entry.set_text("");
+        state.borrow().command_entry.set_text("");
     }
 
     fn show_bookmarks(state: Rc<RefCell<AppState>>) {
