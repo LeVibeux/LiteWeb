@@ -1,0 +1,30 @@
+[package]
+name = "liteweb"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight web browser optimized for CPU, RAM and energy"
+license = "MIT"
+
+[[bin]]
+name = "liteweb"
+path = "src/main.rs"
+
+[dependencies]
+gtk = { version = "0.16", features = ["v3_24"] }
+webkit2gtk = { version = "0.19", features = ["v2_6"] }
+gio = "0.16"
+glib = "0.16"
+gdk = "0.16"
+gdk-pixbuf = "0.16"
+pango = "0.16"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+dirs = "5"
+chrono = { version = "0.4", features = ["serde"] }
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
