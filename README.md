@@ -5,7 +5,7 @@ Navigateur web léger pour Linux, optimisé pour la consommation CPU, RAM et én
 ## Fonctionnalités
 
 - Navigation classique (retour, avant, recharger, onglets)
-- Blocage intégré de pubs et traqueurs (~50 domaines à fort impact)
+- Blocage des navigations vers des domaines publicitaires et de traçage (~50 domaines à fort impact)
 - Mode économie d'énergie (Normal / Éco / Agressif) avec suspension automatique des onglets inactifs
 - Historique et favoris (SQLite local)
 - Raccourcis clavier + palette de commandes (`:`)
@@ -31,6 +31,15 @@ Le binaire se trouve dans `target/release/liteweb`.
 ```
 
 Données utilisateur : `~/.config/liteweb/liteweb.db`
+
+## Sécurité
+
+- Navigation limitée à `http://`, `https://` et `about:blank` ; les schémas locaux ou actifs (`file:`, `data:`, `javascript:`) sont refusés.
+- Permissions Web (caméra, micro, géolocalisation, notifications) et sélecteurs de fichiers refusés par défaut.
+- Sandbox WebKit activée, erreurs TLS bloquantes et automatisation distante désactivée.
+- Base SQLite en mode `0600` et répertoires de profil en mode `0700` sur Unix.
+
+Le filtre intégré agit sur les navigations. Il ne remplace pas un bloqueur de sous-ressources complet de type EasyList.
 
 ## Raccourcis clavier
 

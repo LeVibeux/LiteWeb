@@ -85,6 +85,10 @@ impl TabManager {
         &mut self.tabs
     }
 
+    pub fn index_of_id(&self, id: usize) -> Option<usize> {
+        self.tabs.iter().position(|tab| tab.id == id)
+    }
+
     pub fn active_tab(&self) -> Option<&Tab> {
         self.tabs.get(self.active)
     }
@@ -134,5 +138,22 @@ impl TabManager {
 impl Default for TabManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_id_survives_closing_an_earlier_tab() {
+        let mut tabs = TabManager::new();
+        tabs.create_tab("https://one.example");
+        tabs.create_tab("https://two.example");
+        let second_id = tabs.active_tab().unwrap().id;
+
+        assert!(tabs.close_tab(0));
+        assert_eq!(tabs.index_of_id(second_id), Some(0));
+        assert_eq!(tabs.tabs()[0].url, "https://two.example");
     }
 }

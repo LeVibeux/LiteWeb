@@ -10,6 +10,7 @@ struct FilterRule {
 pub struct FilterEngine {
     rules: Vec<FilterRule>,
     blocked_domains: HashSet<String>,
+    exception_domains: HashSet<String>,
 }
 
 impl FilterEngine {
@@ -17,6 +18,7 @@ impl FilterEngine {
         Self {
             rules: Vec::new(),
             blocked_domains: HashSet::new(),
+            exception_domains: HashSet::new(),
         }
     }
 
@@ -38,7 +40,7 @@ impl FilterEngine {
                         .trim_end_matches('^')
                         .to_string();
                     if rule.is_exception {
-                        self.blocked_domains.remove(&domain);
+                        self.exception_domains.insert(domain);
                     } else {
                         self.blocked_domains.insert(domain);
                     }
@@ -77,29 +79,39 @@ impl FilterEngine {
     pub fn should_block(&self, url: &str) -> bool {
         if let Ok(parsed) = url::Url::parse(url) {
             if let Some(host) = parsed.host_str() {
+                if self
+                    .exception_domains
+                    .iter()
+                    .any(|domain| domain_matches(host, domain))
+                {
+                    return false;
+                }
                 for domain in &self.blocked_domains {
-                    if host == domain.as_str() || host.ends_with(&format!(".{domain}")) {
+                    if domain_matches(host, domain) {
                         return true;
                     }
                 }
             }
         }
 
-        for rule in &self.rules {
-            if rule.is_domain {
-                continue;
-            }
-            if rule.pattern.len() > 3 && url.contains(&rule.pattern) {
-                return !rule.is_exception;
-            }
+        let matching_rules = self
+            .rules
+            .iter()
+            .filter(|rule| !rule.is_domain && rule.pattern.len() > 3 && url.contains(&rule.pattern))
+            .collect::<Vec<_>>();
+        if matching_rules.iter().any(|rule| rule.is_exception) {
+            return false;
         }
-
-        false
+        matching_rules.iter().any(|rule| !rule.is_exception)
     }
 
     pub fn rule_count(&self) -> usize {
-        self.rules.len() + self.blocked_domains.len()
+        self.rules.len()
     }
+}
+
+fn domain_matches(host: &str, domain: &str) -> bool {
+    host == domain || host.ends_with(&format!(".{domain}"))
 }
 
 pub struct Blocker {
@@ -156,5 +168,30 @@ mod tests {
         let mut engine = FilterEngine::new();
         engine.load_from_str("||doubleclick.net^");
         assert!(!engine.should_block("https://example.com/page"));
+    }
+
+    #[test]
+    fn domain_exception_wins_regardless_of_rule_order() {
+        for rules in [
+            "||example.com^\n@@||allowed.example.com^",
+            "@@||allowed.example.com^\n||example.com^",
+        ] {
+            let mut engine = FilterEngine::new();
+            engine.load_from_str(rules);
+            assert!(engine.should_block("https://ads.example.com/banner"));
+            assert!(!engine.should_block("https://allowed.example.com/page"));
+        }
+    }
+
+    #[test]
+    fn exact_exception_wins_regardless_of_rule_order() {
+        for rules in [
+            "|tracker.js|\n@@|tracker.js|",
+            "@@|tracker.js|\n|tracker.js|",
+        ] {
+            let mut engine = FilterEngine::new();
+            engine.load_from_str(rules);
+            assert!(!engine.should_block("https://cdn.example/tracker.js"));
+        }
     }
 }
