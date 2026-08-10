@@ -602,6 +602,8 @@ impl BrowserWindow {
                 }
 
                 st.notebook.append_page(&page_box, Some(&label));
+                page_box.show_all();
+                label.show();
             }
 
             let current_page = if active < tab_count {
@@ -757,7 +759,8 @@ impl BrowserWindow {
 
     fn new_tab(state: Rc<RefCell<AppState>>, url: &str) {
         state.borrow_mut().tabs.create_tab(url);
-        Self::render_tabs(state.clone(), true);
+        // Incremental append — do not structural-rebuild (that destroys current tabs).
+        Self::render_tabs(state.clone(), false);
     }
 
     fn close_current_tab(state: Rc<RefCell<AppState>>) {
