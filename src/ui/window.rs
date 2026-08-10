@@ -11,7 +11,7 @@ const KEYBAR_NORMAL: &str =
     "Ctrl+L URL  |  : commandes  |  Ctrl+T onglet  |  Ctrl+W fermer  |  Ctrl+Tab suivant  |  Alt+←/→ nav  |  F5 recharger  |  Ctrl+D favori  |  Ctrl+Shift+E éco";
 const KEYBAR_URL: &str = "Entrée → naviguer  |  Ctrl+L focus  |  : → barre commande  |  Échap → annuler";
 const KEYBAR_COMMAND: &str =
-    ":open :tab :suspend :suspend-all :eco on|off|aggressive :bookmark :history  |  Entrée → exécuter  |  Échap → annuler";
+    ":open :tab new|next|prev|N :suspend :suspend-all :eco on|off|aggressive :bookmark :history  |  Entrée → exécuter  |  Échap → annuler";
 
 use crate::adblock::Blocker;
 use crate::browser::{create_web_context, create_webview, TabManager};
@@ -198,7 +198,7 @@ impl BrowserWindow {
         prompt.set_width_chars(1);
 
         let command_entry = Entry::new();
-        command_entry.set_placeholder_text(Some("open example.com  |  tab 2  |  eco on"));
+        command_entry.set_placeholder_text(Some("open example.com  |  tab new [url]  |  tab next"));
         command_entry.set_hexpand(true);
         command_entry.style_context().add_class("liteweb-commandbar-entry");
 
@@ -791,6 +791,23 @@ impl BrowserWindow {
             CommandAction::Open(url) => Self::navigate_to(state_cmd.clone(), &url),
             CommandAction::Tab(n) => {
                 Self::switch_to_tab(state_cmd.clone(), n);
+            }
+            CommandAction::TabNew(url) => Self::new_tab(state_cmd.clone(), &url),
+            CommandAction::TabNext => {
+                let idx = {
+                    let mut st = state_cmd.borrow_mut();
+                    st.tabs.next_tab();
+                    st.tabs.active_index()
+                };
+                Self::switch_to_tab(state_cmd.clone(), idx);
+            }
+            CommandAction::TabPrev => {
+                let idx = {
+                    let mut st = state_cmd.borrow_mut();
+                    st.tabs.prev_tab();
+                    st.tabs.active_index()
+                };
+                Self::switch_to_tab(state_cmd.clone(), idx);
             }
             CommandAction::Suspend => {
                 let idx = state_cmd.borrow().tabs.active_index();

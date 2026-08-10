@@ -2,6 +2,9 @@
 pub enum CommandAction {
     Open(String),
     Tab(usize),
+    TabNew(String),
+    TabNext,
+    TabPrev,
     Suspend,
     SuspendAll,
     EcoOn,
@@ -31,8 +34,29 @@ impl CommandPalette {
         match verb.as_str() {
             "open" | "o" => CommandAction::Open(Self::normalize_url(arg)),
             "tab" | "t" => {
-                let n = arg.parse::<usize>().unwrap_or(1);
-                CommandAction::Tab(n.saturating_sub(1))
+                let mut words = arg.split_whitespace();
+                let first = words.next().unwrap_or("").to_lowercase();
+                match first.as_str() {
+                    "" => CommandAction::Unknown(cmd.to_string()),
+                    "new" => {
+                        let rest: String = words.collect::<Vec<_>>().join(" ");
+                        let url = if rest.is_empty() {
+                            "about:blank".to_string()
+                        } else {
+                            Self::normalize_url(&rest)
+                        };
+                        CommandAction::TabNew(url)
+                    }
+                    "next" => CommandAction::TabNext,
+                    "prev" => CommandAction::TabPrev,
+                    _ => {
+                        if let Ok(n) = first.parse::<usize>() {
+                            CommandAction::Tab(n.saturating_sub(1))
+                        } else {
+                            CommandAction::Unknown(cmd.to_string())
+                        }
+                    }
+                }
             }
             "suspend" => CommandAction::Suspend,
             "suspend-all" | "suspendall" => CommandAction::SuspendAll,
@@ -97,6 +121,49 @@ mod tests {
         match action {
             CommandAction::Open(url) => assert!(url.contains("duckduckgo.com")),
             _ => panic!("expected open/search"),
+        }
+    }
+
+    #[test]
+    fn parses_tab_new_blank() {
+        assert_eq!(
+            CommandPalette::parse(":tab new"),
+            CommandAction::TabNew("about:blank".into())
+        );
+    }
+
+    #[test]
+    fn parses_tab_new_url() {
+        assert_eq!(
+            CommandPalette::parse(":tab new example.com"),
+            CommandAction::TabNew("https://example.com".into())
+        );
+    }
+
+    #[test]
+    fn parses_tab_next_prev() {
+        assert_eq!(CommandPalette::parse(":tab next"), CommandAction::TabNext);
+        assert_eq!(CommandPalette::parse(":tab prev"), CommandAction::TabPrev);
+    }
+
+    #[test]
+    fn parses_t_alias_for_tab_new() {
+        assert_eq!(
+            CommandPalette::parse(":t new"),
+            CommandAction::TabNew("about:blank".into())
+        );
+    }
+
+    #[test]
+    fn parses_tab_index_still_works() {
+        assert_eq!(CommandPalette::parse(":tab 2"), CommandAction::Tab(1));
+    }
+
+    #[test]
+    fn tab_empty_is_unknown() {
+        match CommandPalette::parse(":tab") {
+            CommandAction::Unknown(_) => {}
+            other => panic!("expected Unknown, got {other:?}"),
         }
     }
 }
