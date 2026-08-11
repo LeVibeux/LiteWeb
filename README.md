@@ -82,6 +82,35 @@ The built-in filter applies to navigations. It is not a complete subresource blo
 
 Suspended tabs release their WebView (a significant memory saving) and resume when clicked.
 
+## Consumption benchmark
+
+### Sample results (local run, 2026-08-11)
+
+Cgroup CPU/RAM for LiteWeb + WebKit children. Workload: 10 fixed public pages + 1 blank sentinel (except idle = 1 Google tab).
+
+| Scenario | All tabs suspended | RAM before → after | RAM saved | CPU after |
+|----------|-------------------:|-------------------:|----------:|----------:|
+| idle | — | 394 → 394 MiB | 0% | 0.07% |
+| normal | 600.6 s | 1498 → 164 MiB | **89%** (−1.3 GiB) | 0.33% |
+| aggressive | 60.1 s | 1395 → 204 MiB | **85%** (−1.2 GiB) | 1.8% |
+
+**What the gains mean**
+
+- Most of the win is **RAM**: suspended tabs drop their WebView; only the active blank tab keeps a live engine. That is why after-suspension memory can fall *below* the idle Google baseline.
+- **Normal** waits the full 10 min inactivity timeout, then suspends all 10 pages at once → largest, cleanest memory drop.
+- **Aggressive** hits the max-active-tabs limit first (~30 s, 6 tabs), then the 1 min timeout (~60 s, 10/10) → same kind of saving, much sooner.
+- **CPU** after suspension stays low; startup/load spikes are excluded from the “after” window. The benchmark measures cgroup CPU/RAM, not wall-power watts, and does not claim JS throttling as the source of CPU savings.
+- Numbers depend on machine load and live page weight; re-run locally for your hardware.
+
+### How to run
+
+```bash
+./scripts/benchmark_consumption.sh
+./scripts/visualize_benchmark.sh benchmark-results/run-YYYYMMDD-HHMMSS   # needs gnuplot
+```
+
+~15 min, graphical session, fresh profile per scenario. Outputs CSV + `summary.md` under `benchmark-results/`. For comparable runs: AC power, fixed brightness, no other heavy browsers.
+
 ## Architecture
 
 - **Rust** + **WebKitGTK 4.1** + **GTK3**

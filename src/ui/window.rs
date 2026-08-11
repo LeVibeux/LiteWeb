@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gdk_pixbuf::prelude::*;
 use gdk_pixbuf::{InterpType, Pixbuf, PixbufLoader};
@@ -21,6 +21,10 @@ const KEYBAR_COMMAND: &str =
 const LOGO_BYTES: &[u8] = include_bytes!("../../assets/liteweb-logo-grok.jpg");
 
 use crate::adblock::Blocker;
+use crate::benchmark::{
+    BenchmarkConfig, BenchmarkReporter, BenchmarkScenario, IDLE_MEASUREMENT_SECS,
+    POST_SUSPENSION_SECS, WARMUP_SECS,
+};
 use crate::browser::{create_web_context, create_webview, TabManager};
 use crate::commands::{is_safe_navigation_url, CommandAction, CommandPalette};
 use crate::energy::{EnergyLevel, EnergyManager};
@@ -61,10 +65,22 @@ struct AppState {
     eco_label: Label,
     block_label: Label,
     hints_label: Label,
+    benchmark: Option<BenchmarkRun>,
+    /// Depth of programmatic Notebook mutations. While > 0, ignore switch-page
+    /// side effects (rebuilds and set_current_page emit switch-page; handling
+    /// those would touch last_active / wake suspended tabs).
+    notebook_sync_depth: u32,
+}
+
+struct BenchmarkRun {
+    reporter: BenchmarkReporter,
+    warmup_reported: bool,
+    first_suspension_at: Option<Instant>,
+    all_suspended_at: Option<Instant>,
 }
 
 impl BrowserWindow {
-    pub fn new(app: &Application) -> Self {
+    pub fn new(app: &Application, benchmark: Option<BenchmarkConfig>) -> Self {
         let blocker = Rc::new(Blocker::new());
         let storage = Storage::open();
         let web_context = create_web_context();
@@ -102,12 +118,32 @@ impl BrowserWindow {
         window.add(&root);
 
         let mut tabs = TabManager::new();
-        tabs.create_tab("https://duckduckgo.com");
+        let initial_urls = benchmark
+            .as_ref()
+            .map(BenchmarkConfig::initial_urls)
+            .unwrap_or_else(|| vec!["https://duckduckgo.com".to_string()]);
+        for url in initial_urls {
+            tabs.create_tab(url);
+        }
+
+        let mut energy = EnergyManager::new();
+        if let Some(config) = &benchmark {
+            match config.scenario {
+                BenchmarkScenario::Aggressive => energy.set_level(EnergyLevel::Aggressive),
+                BenchmarkScenario::Idle | BenchmarkScenario::Normal => {}
+            }
+        }
+        let benchmark_run = benchmark.map(|config| BenchmarkRun {
+            reporter: BenchmarkReporter::new(config),
+            warmup_reported: false,
+            first_suspension_at: None,
+            all_suspended_at: None,
+        });
 
         let state = Rc::new(RefCell::new(AppState {
             tabs,
             storage,
-            energy: EnergyManager::new(),
+            energy,
             blocker: blocker.clone(),
             web_context,
             notebook: notebook.clone(),
@@ -116,6 +152,8 @@ impl BrowserWindow {
             eco_label: eco_label.clone(),
             block_label: block_label.clone(),
             hints_label: command_bar.hints_label.clone(),
+            benchmark: benchmark_run,
+            notebook_sync_depth: 0,
         }));
 
         Self::wire_toolbar(&toolbar, state.clone());
@@ -123,7 +161,9 @@ impl BrowserWindow {
         Self::wire_shortcuts(&window, state.clone());
         Self::wire_notebook(&notebook, state.clone());
         Self::render_tabs(state.clone(), true);
+        Self::activate_benchmark_sentinel(state.clone());
         Self::start_energy_timer(state.clone());
+        Self::start_benchmark_timer(state.clone(), app.clone());
 
         Self { window, state }
     }
@@ -477,7 +517,13 @@ impl BrowserWindow {
         notebook.connect_switch_page(move |_nb, _page, page_num| {
             let index = page_num as usize;
             let state = state.clone();
+            // Defer so we run after notebook_sync critical sections that scheduled
+            // this emission (rebuild / set_current_page).
             glib::idle_add_local_once(move || {
+                if state.borrow().notebook_sync_depth > 0 {
+                    return;
+                }
+
                 let needs_render = {
                     let mut st = state.borrow_mut();
                     st.tabs.set_active(index);
@@ -489,8 +535,14 @@ impl BrowserWindow {
                 };
 
                 if needs_render {
-                    if let Some(tab) = state.borrow_mut().tabs.tabs_mut().get_mut(index) {
-                        tab.wake();
+                    // Real user selection of a suspended tab: restore it.
+                    {
+                        let mut st = state.borrow_mut();
+                        if let Some(tab) = st.tabs.tabs_mut().get_mut(index) {
+                            tab.wake();
+                        }
+                        // wake left the tab Background; mark it active + touch now.
+                        st.tabs.set_active(index);
                     }
                     Self::render_tabs(state.clone(), true);
                 } else if let Some(tab) = state.borrow().tabs.active_tab() {
@@ -532,9 +584,36 @@ impl BrowserWindow {
         state.borrow_mut().tabs.set_active(index);
         let page = state.borrow().notebook.current_page();
         if page != Some(index as u32) {
-            state.borrow().notebook.set_current_page(Some(index as u32));
+            Self::with_notebook_sync(state.clone(), || {
+                state.borrow().notebook.set_current_page(Some(index as u32));
+            });
         }
         Self::update_chrome(state);
+    }
+
+    /// Suppress switch-page side effects around programmatic Notebook mutations.
+    /// Depth is released on a later idle so deferred switch-page handlers
+    /// scheduled during this section still see a non-zero depth.
+    fn with_notebook_sync(state: Rc<RefCell<AppState>>, f: impl FnOnce()) {
+        Self::begin_notebook_sync(&state);
+        f();
+        Self::end_notebook_sync_later(state);
+    }
+
+    fn begin_notebook_sync(state: &Rc<RefCell<AppState>>) {
+        let mut st = state.borrow_mut();
+        st.notebook_sync_depth = st.notebook_sync_depth.saturating_add(1);
+    }
+
+    fn end_notebook_sync_later(state: Rc<RefCell<AppState>>) {
+        // Two idle turns so same-batch switch-page handlers (one idle each)
+        // still observe a non-zero depth before we release.
+        glib::idle_add_local_once(move || {
+            glib::idle_add_local_once(move || {
+                let mut st = state.borrow_mut();
+                st.notebook_sync_depth = st.notebook_sync_depth.saturating_sub(1);
+            });
+        });
     }
 
     fn render_tabs(state: Rc<RefCell<AppState>>, structural: bool) {
@@ -548,6 +627,8 @@ impl BrowserWindow {
             Self::update_chrome(state);
             return;
         }
+
+        Self::begin_notebook_sync(&state);
 
         if structural {
             let mut st = state.borrow_mut();
@@ -674,6 +755,9 @@ impl BrowserWindow {
         if let Some(page) = current_page {
             notebook.set_current_page(Some(page));
         }
+
+        // Release this render's sync depth after deferred switch-page handlers.
+        Self::end_notebook_sync_later(state);
     }
 
     fn connect_webview(wv: WebView, tab_id: usize, state: Rc<RefCell<AppState>>, storage: Storage) {
@@ -947,6 +1031,30 @@ impl BrowserWindow {
 
     fn start_energy_timer(state: Rc<RefCell<AppState>>) {
         glib::timeout_add_local(Duration::from_secs(30), move || {
+            // GTK notebook selection emits deferred callbacks during startup.
+            // In benchmark runs, force the non-measured blank sentinel as the
+            // logical active tab before evaluating inactivity. This keeps all
+            // ten workload tabs eligible for the normal suspension policy.
+            let sentinel = {
+                let st = state.borrow();
+                st.benchmark
+                    .as_ref()
+                    .filter(|run| !matches!(run.reporter.scenario(), BenchmarkScenario::Idle))
+                    .map(|_| st.tabs.tabs().len().saturating_sub(1))
+            };
+            if let Some(sentinel) = sentinel {
+                state.borrow_mut().tabs.set_active(sentinel);
+                let needs_page = state.borrow().notebook.current_page() != Some(sentinel as u32);
+                if needs_page {
+                    Self::with_notebook_sync(state.clone(), || {
+                        state
+                            .borrow()
+                            .notebook
+                            .set_current_page(Some(sentinel as u32));
+                    });
+                }
+            }
+
             let timeout = state.borrow().energy.level().suspend_timeout();
             let now = std::time::Instant::now();
             let indices = state.borrow().tabs.inactive_indices(now, timeout);
@@ -983,10 +1091,90 @@ impl BrowserWindow {
                         suspended += 1;
                     }
                 }
-                Self::render_tabs(state.clone(), true);
+                if suspended > 0 {
+                    Self::render_tabs(state.clone(), true);
+                }
             }
 
             glib::Continue(true)
+        });
+    }
+
+    fn activate_benchmark_sentinel(state: Rc<RefCell<AppState>>) {
+        let has_sentinel = state
+            .borrow()
+            .benchmark
+            .as_ref()
+            .map(|run| !matches!(run.reporter.scenario(), BenchmarkScenario::Idle))
+            .unwrap_or(false);
+        if !has_sentinel {
+            return;
+        }
+
+        // Notebook emits delayed switch-page callbacks while its initial pages
+        // are appended. Schedule this after them so the blank sentinel remains
+        // selected and every measured URL is genuinely inactive.
+        glib::idle_add_local_once(move || {
+            let sentinel = state.borrow().tabs.tabs().len().saturating_sub(1);
+            Self::switch_to_tab(state, sentinel);
+        });
+    }
+
+    fn start_benchmark_timer(state: Rc<RefCell<AppState>>, app: Application) {
+        if state.borrow().benchmark.is_none() {
+            return;
+        }
+
+        glib::timeout_add_local(Duration::from_secs(1), move || {
+            let should_quit = {
+                let mut st = state.borrow_mut();
+                let suspended_tabs = st
+                    .tabs
+                    .tabs()
+                    .iter()
+                    .filter(|tab| tab.is_suspended())
+                    .count();
+                let Some(run) = st.benchmark.as_mut() else {
+                    return glib::Continue(false);
+                };
+
+                let elapsed = run.reporter.elapsed();
+                if !run.warmup_reported && elapsed >= Duration::from_secs(WARMUP_SECS) {
+                    run.warmup_reported = true;
+                    run.reporter.event("warmup_complete", suspended_tabs);
+                }
+
+                let expected = run.reporter.scenario().expected_suspended_tabs();
+                if expected > 0 && suspended_tabs > 0 && run.first_suspension_at.is_none() {
+                    run.first_suspension_at = Some(Instant::now());
+                    run.reporter.event("first_suspension", suspended_tabs);
+                }
+                if expected > 0 && suspended_tabs >= expected && run.all_suspended_at.is_none() {
+                    run.all_suspended_at = Some(Instant::now());
+                    run.reporter.event("all_suspended", suspended_tabs);
+                }
+
+                let complete = match run.reporter.scenario() {
+                    BenchmarkScenario::Idle => {
+                        elapsed >= Duration::from_secs(WARMUP_SECS + IDLE_MEASUREMENT_SECS)
+                    }
+                    BenchmarkScenario::Normal | BenchmarkScenario::Aggressive => run
+                        .all_suspended_at
+                        .map(|at| at.elapsed() >= Duration::from_secs(POST_SUSPENSION_SECS))
+                        .unwrap_or(false),
+                };
+                if complete {
+                    run.reporter.event("completed", suspended_tabs);
+                }
+                complete
+            };
+
+            if should_quit {
+                app.quit();
+                glib::Continue(false)
+            } else {
+                glib::Continue(true)
+            }
         });
     }
 }

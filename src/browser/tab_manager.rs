@@ -48,9 +48,15 @@ impl TabManager {
     }
 
     pub fn set_active(&mut self, index: usize) {
-        if index < self.tabs.len() {
-            self.active = index;
-            if let Some(tab) = self.tabs.get_mut(index) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        self.active = index;
+        if let Some(tab) = self.tabs.get_mut(index) {
+            // Never clear Suspended here: that would drop the suspended mark while
+            // leaving webview=None (hollow tab). Callers that mean to restore a
+            // tab must wake() explicitly before treating it as active.
+            if !tab.is_suspended() {
                 tab.touch();
                 tab.state = TabState::Active;
             }
@@ -155,5 +161,20 @@ mod tests {
         assert!(tabs.close_tab(0));
         assert_eq!(tabs.index_of_id(second_id), Some(0));
         assert_eq!(tabs.tabs()[0].url, "https://two.example");
+    }
+
+    #[test]
+    fn set_active_does_not_clear_suspended_state() {
+        let mut tabs = TabManager::new();
+        tabs.create_tab("https://one.example");
+        tabs.create_tab("https://two.example");
+        tabs.suspend_tab(0);
+        assert!(tabs.tabs()[0].is_suspended());
+
+        // Programmatic selection must not create a hollow Active tab.
+        tabs.set_active(0);
+        assert_eq!(tabs.active_index(), 0);
+        assert!(tabs.tabs()[0].is_suspended());
+        assert!(tabs.tabs()[0].webview.is_none());
     }
 }

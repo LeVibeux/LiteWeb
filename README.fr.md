@@ -82,6 +82,35 @@ Le filtre intégré agit sur les navigations. Il ne remplace pas un bloqueur com
 
 Les onglets suspendus libèrent leur WebView, ce qui réduit fortement l'usage de mémoire, et se réactivent au clic.
 
+## Benchmark de consommation
+
+### Exemple de résultats (run local, 2026-08-11)
+
+CPU/RAM du cgroup LiteWeb + enfants WebKit. Charge : 10 pages publiques fixes + 1 onglet blank sentinelle (sauf idle = 1 onglet Google).
+
+| Scénario | Tous les onglets suspendus | RAM avant → après | RAM économisée | CPU après |
+|----------|---------------------------:|------------------:|---------------:|----------:|
+| idle | — | 394 → 394 MiB | 0% | 0,07% |
+| normal | 600,6 s | 1498 → 164 MiB | **89%** (−1,3 Gio) | 0,33% |
+| agressif | 60,1 s | 1395 → 204 MiB | **85%** (−1,2 Gio) | 1,8% |
+
+**Lecture des gains**
+
+- Le gain principal est la **RAM** : un onglet suspendu libère sa WebView ; seul l’onglet blank actif garde un moteur vivant. D’où une RAM « après » parfois *inférieure* au baseline idle (Google encore chargé).
+- **Normal** attend les 10 min d’inactivité, puis suspend les 10 pages d’un coup → plus grosse chute de mémoire, la plus « propre ».
+- **Agressif** commence par la limite d’onglets actifs (~30 s, 6 onglets), puis le timeout 1 min (~60 s, 10/10) → même type d’économie, beaucoup plus tôt.
+- Le **CPU** reste bas une fois suspendu ; les pics de chargement ne comptent pas dans la fenêtre « après ». Le banc mesure CPU/RAM cgroup, pas les watts à la prise, et n’attribue pas l’économie CPU à un throttling JavaScript.
+- Les chiffres dépendent de la machine et du poids réel des pages ; relancer localement pour ton matériel.
+
+### Lancer le benchmark
+
+```bash
+./scripts/benchmark_consumption.sh
+./scripts/visualize_benchmark.sh benchmark-results/run-YYYYMMDD-HHMMSS   # nécessite gnuplot
+```
+
+~15 min, session graphique, profil frais par scénario. Sorties CSV + `summary.md` sous `benchmark-results/`. Pour comparer : secteur, luminosité fixe, pas d’autres navigateurs lourds.
+
 ## Architecture
 
 - **Rust** + **WebKitGTK 4.1** + **GTK3**
