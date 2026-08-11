@@ -94,6 +94,16 @@ Cgroup CPU/RAM for LiteWeb + WebKit children. Workload: 10 fixed public pages + 
 | normal | 600.6 s | 1498 → 164 MiB | **89%** (−1.3 GiB) | 0.33% |
 | aggressive | 60.1 s | 1395 → 204 MiB | **85%** (−1.2 GiB) | 1.8% |
 
+<p align="center">
+  <img src="assets/benchmark/memory-summary.png" alt="Memory before/after tab suspension" width="640">
+</p>
+<p align="center">
+  <img src="assets/benchmark/memory-over-time.png" alt="Memory over time by scenario" width="720">
+</p>
+<p align="center">
+  <img src="assets/benchmark/cpu-over-time.png" alt="CPU over time (log scale) by scenario" width="720">
+</p>
+
 **What the gains mean**
 
 - Most of the win is **RAM**: suspended tabs drop their WebView; only the active blank tab keeps a live engine. That is why after-suspension memory can fall *below* the idle Google baseline.

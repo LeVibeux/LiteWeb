@@ -94,6 +94,16 @@ CPU/RAM du cgroup LiteWeb + enfants WebKit. Charge : 10 pages publiques fixes + 
 | normal | 600,6 s | 1498 → 164 MiB | **89%** (−1,3 Gio) | 0,33% |
 | agressif | 60,1 s | 1395 → 204 MiB | **85%** (−1,2 Gio) | 1,8% |
 
+<p align="center">
+  <img src="assets/benchmark/memory-summary.png" alt="Mémoire avant/après suspension des onglets" width="640">
+</p>
+<p align="center">
+  <img src="assets/benchmark/memory-over-time.png" alt="Mémoire dans le temps par scénario" width="720">
+</p>
+<p align="center">
+  <img src="assets/benchmark/cpu-over-time.png" alt="CPU dans le temps (échelle log) par scénario" width="720">
+</p>
+
 **Lecture des gains**
 
 - Le gain principal est la **RAM** : un onglet suspendu libère sa WebView ; seul l’onglet blank actif garde un moteur vivant. D’où une RAM « après » parfois *inférieure* au baseline idle (Google encore chargé).
