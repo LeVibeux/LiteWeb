@@ -10,7 +10,7 @@ Lightweight Linux web browser optimized for CPU, memory, and energy usage.
 
 - Standard navigation (back, forward, reload, tabs)
 - Blocks navigation to advertising and tracking domains (~50 high-impact domains)
-- Energy-saving modes (Normal / Eco / Aggressive) with automatic suspension of inactive tabs
+- Energy-saving modes (Normal / Eco / Aggressive / Ultra) with automatic suspension of inactive tabs
 - History and bookmarks (local SQLite)
 - Keyboard shortcuts and a command palette (`:`)
 
@@ -67,26 +67,32 @@ The built-in filter applies to navigations. It is not a complete subresource blo
 :tab 2
 :suspend
 :suspend-all
-:eco on|off|aggressive
+:eco on|off|aggressive|ultra
 :bookmark list
 :history
 ```
 
 ## Energy modes
 
-| Mode | Suspend after | Maximum active tabs |
-|------|---------------|---------------------|
-| Normal | 10 min | 20 |
-| Eco | 3 min | 10 |
-| Aggressive | 1 min | 5 |
+| Mode | Suspend after | Maximum active tabs | Page engine |
+|------|---------------|---------------------|-------------|
+| Normal | 10 min | 20 | Full WebKit |
+| Eco | 3 min | 10 | Full WebKit |
+| Aggressive | 1 min | 5 | Full WebKit |
+| Ultra | 15 s | 1 | No JS, no images, no media, no GPU, reader flatten |
 
 Suspended tabs release their WebView (a significant memory saving) and resume when clicked.
+
+**Ultra** is the emergency / reading mode. It reloads live tabs as a stripped article (no JavaScript, images, or media). Web apps that need JS will look empty; cycle back with `Ctrl+Shift+E` or `:eco off`.
 
 ## Consumption benchmark
 
 ### Sample results (local run, 2026-08-11)
 
-Cgroup CPU/RAM for LiteWeb + WebKit children. Workload: 10 fixed public pages + 1 blank sentinel (except idle = 1 Google tab).
+Cgroup CPU/RAM for LiteWeb + WebKit children.
+
+- Suspension suite: 10 fixed public pages + 1 blank sentinel (idle = 1 Google tab).
+- Engine suite (`loaded` vs `ultra`): the same 3 pages kept alive (Wikipedia, rust-lang, HN).
 
 | Scenario | All tabs suspended | RAM before → after | RAM saved | CPU after |
 |----------|-------------------:|-------------------:|----------:|----------:|
@@ -109,6 +115,7 @@ Cgroup CPU/RAM for LiteWeb + WebKit children. Workload: 10 fixed public pages + 
 - Most of the win is **RAM**: suspended tabs drop their WebView; only the active blank tab keeps a live engine. That is why after-suspension memory can fall *below* the idle Google baseline.
 - **Normal** waits the full 10 min inactivity timeout, then suspends all 10 pages at once → largest, cleanest memory drop.
 - **Aggressive** hits the max-active-tabs limit first (~30 s, 6 tabs), then the 1 min timeout (~60 s, 10/10) → same kind of saving, much sooner.
+- **Ultra** is measured against **loaded**, not against after-suspend RAM: same 3 pages stay alive, Ultra only strips the engine (no JS/images/media, reader flatten). Re-run the suite to fill that pair; the 10-tab suspension charts stay Normal/Aggressive.
 - **CPU** after suspension stays low; startup/load spikes are excluded from the “after” window. The benchmark measures cgroup CPU/RAM, not wall-power watts, and does not claim JS throttling as the source of CPU savings.
 - Numbers depend on machine load and live page weight; re-run locally for your hardware.
 
@@ -119,7 +126,7 @@ Cgroup CPU/RAM for LiteWeb + WebKit children. Workload: 10 fixed public pages + 
 ./scripts/visualize_benchmark.sh benchmark-results/run-YYYYMMDD-HHMMSS   # needs gnuplot
 ```
 
-~15 min, graphical session, fresh profile per scenario. Outputs CSV + `summary.md` under `benchmark-results/`. For comparable runs: AC power, fixed brightness, no other heavy browsers.
+~22 min, graphical session, fresh profile per scenario. Outputs CSV + `summary.md` under `benchmark-results/`. For comparable runs: AC power, fixed brightness, no other heavy browsers.
 
 ## Architecture
 

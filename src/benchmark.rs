@@ -23,11 +23,25 @@ pub const WARMUP_SECS: u64 = 30;
 pub const IDLE_MEASUREMENT_SECS: u64 = 120;
 pub const POST_SUSPENSION_SECS: u64 = 30;
 
+/// Same three public pages for the loaded-engine comparison. They still produce
+/// readable content with JavaScript and images disabled, so Ultra is not an
+/// empty-document artifact.
+pub const LOADED_BENCHMARK_URLS: [&str; 3] = [
+    "https://fr.wikipedia.org/wiki/Navigateur_web",
+    "https://www.rust-lang.org/fr/",
+    "https://news.ycombinator.com/",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BenchmarkScenario {
     Idle,
     Normal,
     Aggressive,
+    /// Three live pages, full Normal engine. Pair with [`Ultra`].
+    Loaded,
+    /// Three live pages, Ultra engine (no JS/images/media, reader flatten).
+    /// Measures RAM while WebViews stay alive — not after suspension.
+    Ultra,
 }
 
 impl BenchmarkScenario {
@@ -36,6 +50,8 @@ impl BenchmarkScenario {
             "idle" => Some(Self::Idle),
             "normal" => Some(Self::Normal),
             "aggressive" => Some(Self::Aggressive),
+            "loaded" => Some(Self::Loaded),
+            "ultra" => Some(Self::Ultra),
             _ => None,
         }
     }
@@ -45,14 +61,22 @@ impl BenchmarkScenario {
             Self::Idle => "idle",
             Self::Normal => "normal",
             Self::Aggressive => "aggressive",
+            Self::Loaded => "loaded",
+            Self::Ultra => "ultra",
         }
     }
 
     pub fn expected_suspended_tabs(self) -> usize {
         match self {
-            Self::Idle => 0,
+            Self::Idle | Self::Loaded | Self::Ultra => 0,
             Self::Normal | Self::Aggressive => BENCHMARK_URLS.len(),
         }
+    }
+
+    /// Suspension scenarios use a blank sentinel and wait for every measured tab
+    /// to drop its WebView. Loaded/Ultra keep every page alive on purpose.
+    pub fn uses_suspension(self) -> bool {
+        matches!(self, Self::Normal | Self::Aggressive)
     }
 }
 
@@ -76,12 +100,12 @@ impl BenchmarkConfig {
             return Ok(None);
         };
 
-        let scenario_value = args
-            .get(position + 1)
-            .ok_or_else(|| "--benchmark requires idle, normal, or aggressive".to_string())?;
+        let scenario_value = args.get(position + 1).ok_or_else(|| {
+            "--benchmark requires idle, normal, aggressive, loaded, or ultra".to_string()
+        })?;
         let scenario = BenchmarkScenario::parse(scenario_value).ok_or_else(|| {
             format!(
-                "unknown benchmark scenario '{scenario_value}'; expected idle, normal, or aggressive"
+                "unknown benchmark scenario '{scenario_value}'; expected idle, normal, aggressive, loaded, or ultra"
             )
         })?;
 
@@ -103,6 +127,10 @@ impl BenchmarkConfig {
     pub fn initial_urls(&self) -> Vec<String> {
         match self.scenario {
             BenchmarkScenario::Idle => vec![BENCHMARK_URLS[0].to_string()],
+            BenchmarkScenario::Loaded | BenchmarkScenario::Ultra => LOADED_BENCHMARK_URLS
+                .iter()
+                .map(|url| (*url).to_string())
+                .collect(),
             BenchmarkScenario::Normal | BenchmarkScenario::Aggressive => {
                 let mut urls = BENCHMARK_URLS
                     .iter()
@@ -195,7 +223,34 @@ mod tests {
             BenchmarkScenario::parse("aggressive"),
             Some(BenchmarkScenario::Aggressive)
         );
+        assert_eq!(
+            BenchmarkScenario::parse("loaded"),
+            Some(BenchmarkScenario::Loaded)
+        );
+        assert_eq!(
+            BenchmarkScenario::parse("ultra"),
+            Some(BenchmarkScenario::Ultra)
+        );
         assert_eq!(BenchmarkScenario::parse("eco"), None);
+    }
+
+    #[test]
+    fn loaded_and_ultra_share_three_live_pages() {
+        let loaded = BenchmarkConfig {
+            scenario: BenchmarkScenario::Loaded,
+            state_file: PathBuf::from("/tmp/liteweb-benchmark-state.tsv"),
+        };
+        let ultra = BenchmarkConfig {
+            scenario: BenchmarkScenario::Ultra,
+            state_file: PathBuf::from("/tmp/liteweb-benchmark-state.tsv"),
+        };
+        assert_eq!(loaded.initial_urls(), ultra.initial_urls());
+        assert_eq!(loaded.initial_urls().len(), LOADED_BENCHMARK_URLS.len());
+        assert!(!loaded.initial_urls().iter().any(|url| url == "about:blank"));
+        assert!(!loaded.scenario.uses_suspension());
+        assert!(!ultra.scenario.uses_suspension());
+        assert_eq!(loaded.scenario.expected_suspended_tabs(), 0);
+        assert_eq!(ultra.scenario.expected_suspended_tabs(), 0);
     }
 
     #[test]

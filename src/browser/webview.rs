@@ -2,20 +2,104 @@ use std::rc::Rc;
 
 use glib::Cast;
 use webkit2gtk::{
-    CacheModel, FileChooserRequestExt, NavigationPolicyDecision, NavigationPolicyDecisionExt,
-    NotificationExt, PermissionRequestExt, PolicyDecisionExt, PolicyDecisionType, ProcessModel,
-    SettingsExt, TLSErrorsPolicy, URIRequestExt, WebContext, WebContextExt, WebView, WebViewExt,
+    CacheModel, FileChooserRequestExt, HardwareAccelerationPolicy, NavigationPolicyDecision,
+    NavigationPolicyDecisionExt, NotificationExt, PermissionRequestExt, PolicyDecisionExt,
+    PolicyDecisionType, ProcessModel, SettingsExt, TLSErrorsPolicy, URIRequestExt,
+    UserContentInjectedFrames, UserContentManager, UserContentManagerExt, UserStyleLevel,
+    UserStyleSheet, WebContext, WebContextExt, WebView, WebViewExt, WebViewExtManual,
     WebsiteDataManager,
 };
 
 use crate::adblock::Blocker;
 use crate::commands::is_safe_navigation_url;
+use crate::energy::WebViewPolicy;
 
-pub fn create_webview(context: &WebContext, blocker: Rc<Blocker>) -> WebView {
-    let webview = WebView::with_context(context);
+pub const ARCHAIC_STYLESHEET: &str = r#"
+html, body { background: #f4f1e8 !important; color: #1a1a1a !important; overflow-y: auto !important; height: auto !important; }
+* {
+  animation: none !important;
+  animation-duration: 0s !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+  backdrop-filter: none !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+video, audio, canvas, iframe, svg, [role="dialog"] { display: none !important; }
+nav, aside, footer, header, [role="navigation"], [role="banner"], [role="complementary"] {
+  display: none !important;
+}
+img, picture, source { display: none !important; }
+"#;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppliedEngineSwitches {
+    pub javascript: bool,
+    pub images: bool,
+    pub media: bool,
+    pub hardware_acceleration: bool,
+}
+
+pub fn engine_switches(policy: WebViewPolicy) -> AppliedEngineSwitches {
+    AppliedEngineSwitches {
+        javascript: policy.javascript,
+        images: policy.auto_load_images,
+        media: policy.media,
+        hardware_acceleration: policy.hardware_acceleration,
+    }
+}
+
+pub fn create_user_content_manager() -> UserContentManager {
+    UserContentManager::new()
+}
+
+pub fn apply_webview_policy(webview: &WebView, policy: WebViewPolicy) {
+    let Some(settings) = webview.settings() else {
+        return;
+    };
+    settings.set_enable_javascript(policy.javascript);
+    settings.set_enable_javascript_markup(policy.javascript_markup);
+    settings.set_auto_load_images(policy.auto_load_images);
+    settings.set_enable_media(policy.media);
+    settings.set_enable_mediasource(policy.media);
+    settings.set_enable_media_stream(policy.media);
+    settings.set_enable_webaudio(policy.webaudio);
+    settings.set_enable_webgl(policy.webgl);
+    settings.set_enable_webrtc(policy.webrtc);
+    settings.set_enable_html5_local_storage(policy.html5_local_storage);
+    settings.set_enable_html5_database(policy.html5_database);
+    settings.set_enable_smooth_scrolling(policy.smooth_scrolling);
+    settings.set_hardware_acceleration_policy(if policy.hardware_acceleration {
+        HardwareAccelerationPolicy::OnDemand
+    } else {
+        HardwareAccelerationPolicy::Never
+    });
+}
+
+pub fn set_archaic_stylesheet(content: &UserContentManager, enabled: bool) {
+    content.remove_all_style_sheets();
+    if enabled {
+        let sheet = UserStyleSheet::new(
+            ARCHAIC_STYLESHEET,
+            UserContentInjectedFrames::AllFrames,
+            UserStyleLevel::User,
+            &[],
+            &[],
+        );
+        content.add_style_sheet(&sheet);
+    }
+}
+
+pub fn create_webview(
+    context: &WebContext,
+    blocker: Rc<Blocker>,
+    content: &UserContentManager,
+    policy: WebViewPolicy,
+) -> WebView {
+    let webview = WebView::new_with_context_and_user_content_manager(context, content);
+    apply_webview_policy(&webview, policy);
 
     if let Some(settings) = webview.settings() {
-        settings.set_enable_javascript(true);
         settings.set_enable_page_cache(false);
         settings.set_enable_offline_web_application_cache(false);
         settings.set_enable_dns_prefetching(false);
@@ -27,7 +111,6 @@ pub fn create_webview(context: &WebContext, blocker: Rc<Blocker>) -> WebView {
         settings.set_allow_universal_access_from_file_urls(false);
         settings.set_allow_top_navigation_to_data_urls(false);
         settings.set_allow_modal_dialogs(false);
-        settings.set_enable_webrtc(false);
     }
 
     webview.connect_permission_request(|_, request| {
@@ -119,4 +202,20 @@ fn set_private_dir_permissions(path: &std::path::Path) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn set_private_dir_permissions(_path: &std::path::Path) -> std::io::Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::energy::EnergyLevel;
+
+    #[test]
+    fn ultra_switches_are_all_off() {
+        let s = engine_switches(EnergyLevel::Ultra.webview_policy());
+        assert!(!s.javascript && !s.images && !s.media);
+        assert!(
+            s.hardware_acceleration,
+            "Ultra must keep the compositor that handles trackpad SMOOTH events"
+        );
+    }
 }

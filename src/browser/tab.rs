@@ -21,6 +21,7 @@ pub struct Tab {
     pub last_active: Instant,
     pub webview: Option<WebView>,
     pub tab_label: Option<Label>,
+    pub reader_pending: bool,
 }
 
 impl Tab {
@@ -36,6 +37,7 @@ impl Tab {
             last_active: Instant::now(),
             webview: None,
             tab_label: None,
+            reader_pending: false,
         }
     }
 
@@ -55,5 +57,6 @@ impl Tab {
     pub fn wake(&mut self) {
         self.state = TabState::Background;
         self.last_active = Instant::now();
+        self.reader_pending = false;
     }
 }
