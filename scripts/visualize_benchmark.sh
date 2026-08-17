@@ -4,15 +4,19 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/visualize_benchmark.sh BENCHMARK_RESULT_DIRECTORY
+Usage: ./scripts/visualize_benchmark.sh DIR [--also DIR]...
 
-Creates readable SVG charts in BENCHMARK_RESULT_DIRECTORY/charts/:
-  - memory-over-time.svg  — idle/normal/aggressive, shared linear scale
-  - cpu-over-time.svg     — same series, shared log Y scale
-  - memory-summary.svg    — before/after bars with MiB labels
+Creates readable SVG charts in DIR/charts/:
+  - memory-over-time.svg  — idle/normal/aggressive, if that suite is present
+  - cpu-over-time.svg
+  - memory-summary.svg
   - memory-loaded.svg     — loaded vs ultra (3 live pages), if present
   - cpu-loaded.svg
   - memory-loaded-summary.svg
+
+Pass --also to pull missing CSVs from another run (typically overlay an
+ultra-YYYYMMDD folder onto a 10-tab suspension run). Charts are always
+written into the first DIR.
 
 Vertical markers show when tabs start suspending / are all suspended
 (from events-*.csv). Shutdown samples (inactive, zero mem, negative CPU)
@@ -20,26 +24,117 @@ are excluded.
 EOF
 }
 
-if [[ $# -ne 1 ]]; then
-  usage >&2
-  exit 2
-fi
-
 command -v gnuplot >/dev/null || {
   echo "gnuplot is required (sudo apt install gnuplot)." >&2
   exit 1
 }
 
-RUN_DIR="$1"
+RUN_DIR=""
+ALSO_DIRS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --also)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      ALSO_DIRS+=("$2")
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -*)
+      usage >&2
+      exit 2
+      ;;
+    *)
+      if [[ -n "$RUN_DIR" ]]; then
+        usage >&2
+        exit 2
+      fi
+      RUN_DIR="$1"
+      shift
+      ;;
+  esac
+done
+
+[[ -n "$RUN_DIR" ]] || { usage >&2; exit 2; }
 [[ -d "$RUN_DIR" ]] || { echo "Result directory not found: $RUN_DIR" >&2; exit 1; }
 RUN_DIR="$(cd -- "$RUN_DIR" && pwd)"
 
-for file in summary.csv samples-idle.csv samples-normal.csv samples-aggressive.csv; do
-  [[ -f "$RUN_DIR/$file" ]] || {
-    echo "Missing benchmark CSV: $RUN_DIR/$file" >&2
-    exit 1
-  }
+resolved_also=()
+for extra in "${ALSO_DIRS[@]+"${ALSO_DIRS[@]}"}"; do
+  [[ -d "$extra" ]] || { echo "Also-directory not found: $extra" >&2; exit 1; }
+  resolved_also+=("$(cd -- "$extra" && pwd)")
 done
+ALSO_DIRS=("${resolved_also[@]+"${resolved_also[@]}"}")
+
+csv_path() {
+  local name="$1"
+  if [[ -f "$RUN_DIR/$name" ]]; then
+    printf '%s\n' "$RUN_DIR/$name"
+    return 0
+  fi
+  local extra
+  for extra in "${ALSO_DIRS[@]+"${ALSO_DIRS[@]}"}"; do
+    if [[ -f "$extra/$name" ]]; then
+      printf '%s\n' "$extra/$name"
+      return 0
+    fi
+  done
+  return 1
+}
+
+merge_summaries() {
+  local dest="$1"
+  python3 - "$dest" "$RUN_DIR" "${ALSO_DIRS[@]+"${ALSO_DIRS[@]}"}" <<'PY'
+import sys
+from pathlib import Path
+
+dest = Path(sys.argv[1])
+dirs = [Path(p) for p in sys.argv[2:] if p]
+header = None
+by_scenario = {}
+order = []
+for folder in dirs:
+    path = folder / "summary.csv"
+    if not path.is_file():
+        continue
+    lines = path.read_text().splitlines()
+    if not lines:
+        continue
+    if header is None:
+        header = lines[0]
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        scenario = line.split(",", 1)[0]
+        if scenario not in by_scenario:
+            order.append(scenario)
+        by_scenario[scenario] = line
+if header is None:
+    header = "scenario,first_suspension_s,all_suspended_s,memory_before_mib,memory_after_mib,memory_saved_mib,memory_saved_pct,cpu_before_pct,cpu_after_pct"
+dest.write_text(header + "\n" + "".join(by_scenario[s] + "\n" for s in order))
+PY
+}
+
+SAMPLES_IDLE="$(csv_path samples-idle.csv || true)"
+SAMPLES_NORMAL="$(csv_path samples-normal.csv || true)"
+SAMPLES_AGGRESSIVE="$(csv_path samples-aggressive.csv || true)"
+SAMPLES_LOADED="$(csv_path samples-loaded.csv || true)"
+SAMPLES_ULTRA="$(csv_path samples-ultra.csv || true)"
+SAMPLES_CHROMIUM="$(csv_path samples-chromium.csv || true)"
+
+HAS_SUSPENSION=0
+HAS_ENGINE=0
+HAS_CHROMIUM=0
+[[ -n "$SAMPLES_IDLE" && -n "$SAMPLES_NORMAL" && -n "$SAMPLES_AGGRESSIVE" ]] && HAS_SUSPENSION=1
+[[ -n "$SAMPLES_LOADED" && -n "$SAMPLES_ULTRA" ]] && HAS_ENGINE=1
+[[ -n "$SAMPLES_CHROMIUM" ]] && HAS_CHROMIUM=1
+
+if [[ "$HAS_SUSPENSION" -eq 0 && "$HAS_ENGINE" -eq 0 ]]; then
+  echo "No usable samples in $RUN_DIR (need idle/normal/aggressive and/or loaded+ultra)." >&2
+  exit 1
+fi
 
 CHARTS="$RUN_DIR/charts"
 FILTERED="$CHARTS/.filtered"
@@ -53,9 +148,16 @@ filter_samples() {
   ' "$1" > "$2"
 }
 
-filter_samples "$RUN_DIR/samples-idle.csv" "$FILTERED/samples-idle.csv"
-filter_samples "$RUN_DIR/samples-normal.csv" "$FILTERED/samples-normal.csv"
-filter_samples "$RUN_DIR/samples-aggressive.csv" "$FILTERED/samples-aggressive.csv"
+X_MAX=""
+MEM_MAX=""
+CPU_MAX=""
+MARKERS="$FILTERED/suspension-markers.csv"
+: > "$MARKERS"
+
+if [[ "$HAS_SUSPENSION" -eq 1 ]]; then
+filter_samples "$SAMPLES_IDLE" "$FILTERED/samples-idle.csv"
+filter_samples "$SAMPLES_NORMAL" "$FILTERED/samples-normal.csv"
+filter_samples "$SAMPLES_AGGRESSIVE" "$FILTERED/samples-aggressive.csv"
 
 # Floor CPU at a tiny epsilon so log scale can show near-idle points.
 for scenario in idle normal aggressive; do
@@ -96,12 +198,10 @@ X_MAX="$1"
 MEM_MAX="$2"
 CPU_MAX="$3"
 
-# Suspension milestones from events-*.csv → vertical arrow objects.
-# Format per line: scenario,event,elapsed_s
 MARKERS="$FILTERED/suspension-markers.csv"
 : > "$MARKERS"
 for scenario in idle normal aggressive; do
-  ev="$RUN_DIR/events-${scenario}.csv"
+  ev="$(csv_path "events-${scenario}.csv" || true)"
   [[ -f "$ev" ]] || continue
   awk -F ',' -v sc="$scenario" '
     NR == 1 { next }
@@ -318,11 +418,25 @@ if [[ ! -s "$CHARTS/memory-over-time.svg" || ! -s "$CHARTS/cpu-over-time.svg" ||
   exit 1
 fi
 rm -f "$CHARTS/gnuplot.err"
+fi
 
-if [[ -f "$RUN_DIR/samples-loaded.csv" && -f "$RUN_DIR/samples-ultra.csv" ]]; then
-  filter_samples "$RUN_DIR/samples-loaded.csv" "$FILTERED/samples-loaded.csv"
-  filter_samples "$RUN_DIR/samples-ultra.csv" "$FILTERED/samples-ultra.csv"
-  for scenario in loaded ultra; do
+MERGED_SUMMARY="$FILTERED/summary-merged.csv"
+merge_summaries "$MERGED_SUMMARY"
+
+if [[ "$HAS_ENGINE" -eq 0 && "$HAS_CHROMIUM" -eq 1 ]]; then
+  echo "Chromium samples found without loaded+ultra; overlay needs the Ultra pair." >&2
+fi
+
+if [[ "$HAS_ENGINE" -eq 1 ]]; then
+  filter_samples "$SAMPLES_LOADED" "$FILTERED/samples-loaded.csv"
+  filter_samples "$SAMPLES_ULTRA" "$FILTERED/samples-ultra.csv"
+  engine_files=("$FILTERED/samples-loaded.csv" "$FILTERED/samples-ultra.csv")
+  if [[ "$HAS_CHROMIUM" -eq 1 ]]; then
+    filter_samples "$SAMPLES_CHROMIUM" "$FILTERED/samples-chromium.csv"
+    engine_files+=("$FILTERED/samples-chromium.csv")
+  fi
+  for scenario in loaded ultra chromium; do
+    [[ -f "$FILTERED/samples-${scenario}.csv" ]] || continue
     awk -F ',' 'BEGIN { OFS="," }
       NR == 1 { print; next }
       {
@@ -348,7 +462,7 @@ if [[ -f "$RUN_DIR/samples-loaded.csv" && -f "$RUN_DIR/samples-ultra.csv" ]]; th
         if (cpumax < 1) cpumax = 1
         printf "%.3f %.2f %.2f\n", xmax * 1.02, memmax * 1.10, cpumax * 1.15
       }
-    ' "$FILTERED/samples-loaded.csv" "$FILTERED/samples-ultra.csv"
+    ' "${engine_files[@]}"
   )"
   # shellcheck disable=SC2086
   set -- $loaded_limits
@@ -358,8 +472,44 @@ if [[ -f "$RUN_DIR/samples-loaded.csv" && -f "$RUN_DIR/samples-ultra.csv" ]]; th
   LOADED_SUMMARY="$FILTERED/loaded-bars.csv"
   awk -F ',' 'BEGIN { OFS=","; print "scenario,memory" }
     NR == 1 { next }
-    $1 == "loaded" || $1 == "ultra" { printf "%s,%.2f\n", $1, $4+0 }
-  ' "$RUN_DIR/summary.csv" > "$LOADED_SUMMARY"
+    $1 == "loaded" || $1 == "ultra" || $1 == "chromium" { printf "%s,%.2f\n", $1, $4+0 }
+  ' "$MERGED_SUMMARY" > "$LOADED_SUMMARY"
+
+  CPU_STATS="$FILTERED/cpu-mean-median.csv"
+  python3 - "$CPU_STATS" "$FILTERED" <<'PY'
+import csv, statistics, sys
+from pathlib import Path
+dest, filtered = Path(sys.argv[1]), Path(sys.argv[2])
+rows = [("scenario", "mean", "median")]
+for sc in ("loaded", "ultra", "chromium"):
+    path = filtered / f"samples-{sc}.csv"
+    if not path.is_file():
+        continue
+    cpus = []
+    with path.open() as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            try:
+                t = float(row["elapsed_s"])
+                cpu = float(row["cpu_percent"])
+            except (KeyError, ValueError):
+                continue
+            if t >= 30 and cpu >= 0:
+                cpus.append(cpu)
+    if not cpus:
+        continue
+    rows.append((sc, f"{statistics.fmean(cpus):.4f}", f"{statistics.median(cpus):.4f}"))
+dest.write_text("\n".join(",".join(r) for r in rows) + "\n")
+PY
+
+  CHROME_PLOT=""
+  CHROME_CPU_PLOT=""
+  if [[ "$HAS_CHROMIUM" -eq 1 ]]; then
+    CHROME_PLOT=", \\
+  '${FILTERED}/samples-chromium.csv' every ::1 using 2:(\$5/1048576) with lines ls 5 title 'Chromium (stock)'"
+    CHROME_CPU_PLOT=", \\
+  '${FILTERED}/samples-chromium-log.csv' every ::1 using 2:7 with lines ls 5 title 'Chromium (stock)'"
+  fi
 
   gnuplot 2>"$CHARTS/gnuplot-loaded.err" <<GNUPLOT
 set datafile separator comma
@@ -377,22 +527,24 @@ set tmargin 3
 set bmargin 6
 set style line 2 lc rgb '#D55E00' lw 2.8 lt 1
 set style line 4 lc rgb '#CC79A7' lw 2.8 lt 1
+set style line 5 lc rgb '#56B4E9' lw 2.8 lt 1
 set style line 10 lc rgb '#6B5B95' lw 1
 set style line 12 lc rgb '#CC79A7' lw 1
+set style line 13 lc rgb '#0072B2' lw 1
 
 set output '${CHARTS}/memory-loaded.svg'
-set title 'LiteWeb memory — same 3 pages loaded (Normal vs Ultra)'
+set title 'Memory — same 3 pages still loaded'
 set xlabel 'Elapsed time (seconds)'
 set ylabel 'Memory (MiB)'
 set xrange [0:${LX_MAX}]
 set yrange [0:${LMEM_MAX}]
 plot \
-  '${FILTERED}/samples-loaded.csv' every ::1 using 2:(\$5/1048576) with lines ls 2 title 'Loaded (Normal engine)', \
-  '${FILTERED}/samples-ultra.csv' every ::1 using 2:(\$5/1048576) with lines ls 4 title 'Ultra (stripped engine)'
+  '${FILTERED}/samples-loaded.csv' every ::1 using 2:(\$5/1048576) with lines ls 2 title 'LiteWeb Normal', \
+  '${FILTERED}/samples-ultra.csv' every ::1 using 2:(\$5/1048576) with lines ls 4 title 'LiteWeb Ultra'${CHROME_PLOT}
 set output
 
 set output '${CHARTS}/cpu-loaded.svg'
-set title 'LiteWeb CPU — same 3 pages loaded (log scale)'
+set title 'CPU — same 3 pages still loaded (log scale)'
 set xlabel 'Elapsed time (seconds)'
 set ylabel 'CPU (%)  [log scale]'
 set xrange [0:${LX_MAX}]
@@ -401,8 +553,8 @@ set yrange [0.01:${LCPU_MAX}]
 set format y '%g'
 set ytics (0.01, 0.1, 0.5, 1, 5, 10, 50, 100, 500)
 plot \
-  '${FILTERED}/samples-loaded-log.csv' every ::1 using 2:7 with lines ls 2 title 'Loaded (Normal engine)', \
-  '${FILTERED}/samples-ultra-log.csv' every ::1 using 2:7 with lines ls 4 title 'Ultra (stripped engine)'
+  '${FILTERED}/samples-loaded-log.csv' every ::1 using 2:7 with lines ls 2 title 'LiteWeb Normal', \
+  '${FILTERED}/samples-ultra-log.csv' every ::1 using 2:7 with lines ls 4 title 'LiteWeb Ultra'${CHROME_CPU_PLOT}
 set output
 unset logscale y
 set format y '%g'
@@ -435,9 +587,20 @@ plot \
   '${LOADED_SUMMARY}' every ::1 using 2:xtic(1) with histogram ls 12 title 'Cruise RAM', \
   '' every ::1 using (\$0):(\$2):(sprintf('%.0f', \$2)) with labels offset 0,0.7 font 'Sans,11' notitle
 set output
+
+set output '${CHARTS}/cpu-loaded-summary.svg'
+set title 'Cruise CPU: mean vs median (after 30s warmup)'
+set ylabel 'CPU (%)'
+set key bottom center horizontal outside
+plot \
+  '${CPU_STATS}' every ::1 using 2:xtic(1) with histogram ls 10 title 'Mean', \
+  '' every ::1 using 3 with histogram ls 13 title 'Median', \
+  '' every ::1 using (\$0-0.18):(\$2):(sprintf('%.2f', \$2)) with labels offset 0,0.7 font 'Sans,10' notitle, \
+  '' every ::1 using (\$0+0.18):(\$3):(sprintf('%.2f', \$3)) with labels offset 0,0.7 font 'Sans,10' notitle
+set output
 GNUPLOT
 
-  if [[ ! -s "$CHARTS/memory-loaded.svg" || ! -s "$CHARTS/cpu-loaded.svg" || ! -s "$CHARTS/memory-loaded-summary.svg" ]]; then
+  if [[ ! -s "$CHARTS/memory-loaded.svg" || ! -s "$CHARTS/cpu-loaded.svg" || ! -s "$CHARTS/memory-loaded-summary.svg" || ! -s "$CHARTS/cpu-loaded-summary.svg" ]]; then
     echo "gnuplot failed to create loaded/ultra charts:" >&2
     cat "$CHARTS/gnuplot-loaded.err" >&2 || true
     exit 1
@@ -446,13 +609,15 @@ GNUPLOT
 fi
 
 echo "Charts created in: $CHARTS"
-echo "  memory-over-time.svg  (markers = suspension times)"
-echo "  cpu-over-time.svg     (log Y + suspension markers)"
-echo "  memory-summary.svg"
-if [[ -s "$CHARTS/memory-loaded.svg" ]]; then
-  echo "  memory-loaded.svg / cpu-loaded.svg / memory-loaded-summary.svg"
+if [[ "$HAS_SUSPENSION" -eq 1 ]]; then
+  echo "  memory-over-time.svg  (markers = suspension times)"
+  echo "  cpu-over-time.svg     (log Y + suspension markers)"
+  echo "  memory-summary.svg"
+  echo "  scales: x<=${X_MAX}s  mem<=${MEM_MAX} MiB  cpu_log<=${CPU_MAX}%"
 fi
-echo "  scales: x<=${X_MAX}s  mem<=${MEM_MAX} MiB  cpu_log<=${CPU_MAX}%"
+if [[ -s "$CHARTS/memory-loaded.svg" ]]; then
+  echo "  memory-loaded.svg / cpu-loaded.svg / memory-loaded-summary.svg / cpu-loaded-summary.svg"
+fi
 if [[ -s "$MARKERS" ]]; then
   echo "  suspension markers:"
   column -t -s, "$MARKERS" | sed 's/^/    /'

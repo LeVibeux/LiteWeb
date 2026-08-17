@@ -87,15 +87,16 @@ Les onglets suspendus libèrent leur WebView, ce qui réduit fortement l'usage d
 
 ## Benchmark de consommation
 
-### Exemple de résultats (run local, 2026-08-11)
+### Exemple de résultats (machine locale)
 
-CPU/RAM du cgroup LiteWeb + enfants WebKit.
+CPU/RAM du cgroup LiteWeb + enfants WebKit. Les **chiffres de croisière sont la moyenne arithmétique** des échantillons ~1 Hz de `warmup_complete` → `completed` (pas la médiane, pas un seul dernier sample). Le démarrage / chargement avant le warmup est exclu.
 
-- Suite suspension : 10 pages publiques fixes + 1 onglet blank sentinelle (idle = 1 onglet Google).
-- Suite moteur (`loaded` vs `ultra`) : les 3 mêmes pages restent chargées (Wikipedia, rust-lang, HN).
+#### Suite suspension d’onglets (2026-08-11)
 
-| Scénario | Tous les onglets suspendus | RAM avant → après | RAM économisée | CPU après |
-|----------|---------------------------:|------------------:|---------------:|----------:|
+10 pages publiques fixes + 1 onglet blank sentinelle (`idle` = 1 onglet Google).
+
+| Scénario | Tous les onglets suspendus | RAM avant → après | RAM économisée | CPU après (moyenne) |
+|----------|---------------------------:|------------------:|---------------:|--------------------:|
 | idle | — | 394 → 394 MiB | 0% | 0,07% |
 | normal | 600,6 s | 1498 → 164 MiB | **89%** (−1,3 Gio) | 0,33% |
 | agressif | 60,1 s | 1395 → 204 MiB | **85%** (−1,2 Gio) | 1,8% |
@@ -110,23 +111,59 @@ CPU/RAM du cgroup LiteWeb + enfants WebKit.
   <img src="assets/benchmark/cpu-over-time.png" alt="CPU dans le temps (échelle log) par scénario" width="720">
 </p>
 
+#### Suite moteur vivant — Normal vs Ultra vs Chromium (2026-08-16 / 17)
+
+Les 3 mêmes pages restent chargées (Wikipedia, rust-lang, HN) ; **pas de suspension d’onglets**. Warmup 30 s + mesure 120 s. Chromium = Google Chrome 151 stock (mêmes URLs, profil frais).
+
+| Scénario | RAM croisière (moyenne) | CPU moyenne | CPU médiane | vs Chromium |
+|----------|------------------------:|------------:|------------:|----------|
+| chromium | 488 MiB | 2,52% | 0,49% | — |
+| loaded (Normal) | 451,5 MiB | 1,74% | 0,05% | −7,5% RAM |
+| ultra | 312,3 MiB | 0,52% | 0,03% | **−36% RAM**, **−80% CPU** |
+
+<p align="center">
+  <img src="assets/benchmark/memory-loaded-summary.png" alt="Mémoire croisière Chromium vs LiteWeb Normal vs Ultra" width="640">
+</p>
+<p align="center">
+  <img src="assets/benchmark/memory-loaded.png" alt="Mémoire dans le temps Chromium vs LiteWeb" width="720">
+</p>
+<p align="center">
+  <img src="assets/benchmark/cpu-loaded.png" alt="CPU dans le temps (log) Chromium vs LiteWeb" width="720">
+</p>
+<p align="center">
+  <img src="assets/benchmark/cpu-loaded-summary.png" alt="CPU croisière moyenne vs médiane" width="640">
+</p>
+
+Le **CPU moyenne** est `cpu_after_pct` sur la fenêtre post-warmup. Ce **n’est pas une médiane**. Les médianes restent quasi idle (dernier graphe) ; quelques pics tirent la moyenne. Ultra atténue surtout ces pics. Privilégier la moyenne pour le budget CPU une fois le navigateur ouvert.
+
 **Lecture des gains**
 
-- Le gain principal est la **RAM** : un onglet suspendu libère sa WebView ; seul l’onglet blank actif garde un moteur vivant. D’où une RAM « après » parfois *inférieure* au baseline idle (Google encore chargé).
+- Le gain principal de la suite suspension est la **RAM** : un onglet suspendu libère sa WebView ; seul l’onglet blank actif garde un moteur vivant. D’où une RAM « après » parfois *inférieure* au baseline idle (Google encore chargé).
 - **Normal** attend les 10 min d’inactivité, puis suspend les 10 pages d’un coup → plus grosse chute de mémoire, la plus « propre ».
 - **Agressif** commence par la limite d’onglets actifs (~30 s, 6 onglets), puis le timeout 1 min (~60 s, 10/10) → même type d’économie, beaucoup plus tôt.
-- **Ultra** se compare à **loaded**, pas à la RAM après suspension : les 3 mêmes pages restent vivantes, Ultra ne fait que dépouiller le moteur (plus de JS/images/médias, article aplati). Relancer le banc pour remplir cette paire ; les graphes de suspension à 10 onglets restent Normal/Agressif.
-- Le **CPU** reste bas une fois suspendu ; les pics de chargement ne comptent pas dans la fenêtre « après ». Le banc mesure CPU/RAM cgroup, pas les watts à la prise, et n’attribue pas l’économie CPU à un throttling JavaScript.
+- **Ultra** se compare à **loaded** et à **Chromium stock**, pas à la RAM après suspension : les 3 mêmes pages restent vivantes ; Ultra ne fait que dépouiller le moteur (plus de JS/images/médias/GPU, article aplati). Lancer `./scripts/benchmark_ultra.sh` puis `./scripts/benchmark_chromium.sh --output …`.
+- Le **CPU** reste bas une fois suspendu ; les pics de chargement ne comptent pas dans les fenêtres de croisière. Le banc mesure CPU/RAM cgroup, pas les watts à la prise, et n’attribue pas l’économie CPU uniquement à un throttling JavaScript.
 - Les chiffres dépendent de la machine et du poids réel des pages ; relancer localement pour ton matériel.
 
 ### Lancer le benchmark
 
 ```bash
+# Suite suspension 10 onglets (~15 min)
 ./scripts/benchmark_consumption.sh
-./scripts/visualize_benchmark.sh benchmark-results/run-YYYYMMDD-HHMMSS   # nécessite gnuplot
+./scripts/visualize_benchmark.sh benchmark-results/run-YYYYMMDD-HHMMSS
+
+# Les 3 mêmes pages, Normal vs Ultra (~5 min) — graphes loaded/ultra
+./scripts/benchmark_ultra.sh
+
+# Superposer Ultra / Chromium sur un run de suspension existant
+./scripts/visualize_benchmark.sh benchmark-results/run-YYYYMMDD-HHMMSS \
+    --also benchmark-results/ultra-YYYYMMDD-HHMMSS
+
+# Chromium stock, mêmes 3 pages (~2,5 min) ; ajouter dans le dossier Ultra
+./scripts/benchmark_chromium.sh --output benchmark-results/ultra-YYYYMMDD-HHMMSS
 ```
 
-~22 min, session graphique, profil frais par scénario. Sorties CSV + `summary.md` sous `benchmark-results/`. Pour comparer : secteur, luminosité fixe, pas d’autres navigateurs lourds.
+Session graphique, profil frais par scénario. Sorties CSV + `summary.md` sous `benchmark-results/`. Pour comparer : secteur, luminosité fixe, pas d’autres navigateurs lourds.
 
 ## Architecture
 

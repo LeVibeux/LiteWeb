@@ -87,15 +87,16 @@ Suspended tabs release their WebView (a significant memory saving) and resume wh
 
 ## Consumption benchmark
 
-### Sample results (local run, 2026-08-11)
+### Sample results (local machine)
 
-Cgroup CPU/RAM for LiteWeb + WebKit children.
+Cgroup CPU/RAM for LiteWeb + WebKit children. **Cruise figures are the arithmetic mean** of ~1 Hz samples from `warmup_complete` → `completed` (not median, not a single last sample). Startup/load before warmup is excluded.
 
-- Suspension suite: 10 fixed public pages + 1 blank sentinel (idle = 1 Google tab).
-- Engine suite (`loaded` vs `ultra`): the same 3 pages kept alive (Wikipedia, rust-lang, HN).
+#### Tab suspension suite (2026-08-11)
 
-| Scenario | All tabs suspended | RAM before → after | RAM saved | CPU after |
-|----------|-------------------:|-------------------:|----------:|----------:|
+10 fixed public pages + 1 blank sentinel (`idle` = 1 Google tab).
+
+| Scenario | All tabs suspended | RAM before → after | RAM saved | CPU after (mean) |
+|----------|-------------------:|-------------------:|----------:|-----------------:|
 | idle | — | 394 → 394 MiB | 0% | 0.07% |
 | normal | 600.6 s | 1498 → 164 MiB | **89%** (−1.3 GiB) | 0.33% |
 | aggressive | 60.1 s | 1395 → 204 MiB | **85%** (−1.2 GiB) | 1.8% |
@@ -110,23 +111,59 @@ Cgroup CPU/RAM for LiteWeb + WebKit children.
   <img src="assets/benchmark/cpu-over-time.png" alt="CPU over time (log scale) by scenario" width="720">
 </p>
 
+#### Live engine suite — Normal vs Ultra vs Chromium (2026-08-16 / 17)
+
+Same 3 pages kept alive (Wikipedia, rust-lang, HN); **no tab suspension**. 30 s warmup + 120 s measure. Chromium is stock Google Chrome 151 (same URLs, fresh profile).
+
+| Scenario | RAM cruise (mean) | CPU mean | CPU median | vs Chromium |
+|----------|------------------:|---------:|-----------:|----------|
+| chromium | 488 MiB | 2.52% | 0.49% | — |
+| loaded (Normal) | 451.5 MiB | 1.74% | 0.05% | −7.5% RAM |
+| ultra | 312.3 MiB | 0.52% | 0.03% | **−36% RAM**, **−80% CPU** |
+
+<p align="center">
+  <img src="assets/benchmark/memory-loaded-summary.png" alt="Cruise memory Chromium vs LiteWeb Normal vs Ultra" width="640">
+</p>
+<p align="center">
+  <img src="assets/benchmark/memory-loaded.png" alt="Memory over time Chromium vs LiteWeb" width="720">
+</p>
+<p align="center">
+  <img src="assets/benchmark/cpu-loaded.png" alt="CPU over time (log) Chromium vs LiteWeb" width="720">
+</p>
+<p align="center">
+  <img src="assets/benchmark/cpu-loaded-summary.png" alt="Cruise CPU mean vs median" width="640">
+</p>
+
+CPU **mean** is `cpu_after_pct` over the post-warmup window. It is **not a median**. Medians stay near idle (see the last chart); a few spikes pull the mean up. Ultra mainly damps those spikes. Prefer the mean for “CPU budget while the browser is open”.
+
 **What the gains mean**
 
-- Most of the win is **RAM**: suspended tabs drop their WebView; only the active blank tab keeps a live engine. That is why after-suspension memory can fall *below* the idle Google baseline.
+- Most of the suspension-suite win is **RAM**: suspended tabs drop their WebView; only the active blank tab keeps a live engine. That is why after-suspension memory can fall *below* the idle Google baseline.
 - **Normal** waits the full 10 min inactivity timeout, then suspends all 10 pages at once → largest, cleanest memory drop.
 - **Aggressive** hits the max-active-tabs limit first (~30 s, 6 tabs), then the 1 min timeout (~60 s, 10/10) → same kind of saving, much sooner.
-- **Ultra** is measured against **loaded**, not against after-suspend RAM: same 3 pages stay alive, Ultra only strips the engine (no JS/images/media, reader flatten). Re-run the suite to fill that pair; the 10-tab suspension charts stay Normal/Aggressive.
-- **CPU** after suspension stays low; startup/load spikes are excluded from the “after” window. The benchmark measures cgroup CPU/RAM, not wall-power watts, and does not claim JS throttling as the source of CPU savings.
+- **Ultra** is measured against **loaded** and **stock Chromium**, not against after-suspend RAM: same 3 pages stay alive; Ultra only strips the engine (no JS/images/media/GPU, reader flatten). Run `./scripts/benchmark_ultra.sh` then `./scripts/benchmark_chromium.sh --output …`.
+- **CPU** after suspension stays low; startup/load spikes are excluded from cruise windows. The benchmark measures cgroup CPU/RAM, not wall-power watts, and does not claim JS throttling as the sole source of CPU savings.
 - Numbers depend on machine load and live page weight; re-run locally for your hardware.
 
 ### How to run
 
 ```bash
+# 10-tab suspension suite (~15 min)
 ./scripts/benchmark_consumption.sh
-./scripts/visualize_benchmark.sh benchmark-results/run-YYYYMMDD-HHMMSS   # needs gnuplot
+./scripts/visualize_benchmark.sh benchmark-results/run-YYYYMMDD-HHMMSS
+
+# Same 3 pages, Normal vs Ultra (~5 min) — writes loaded/ultra charts
+./scripts/benchmark_ultra.sh
+
+# Overlay Ultra / Chromium charts onto an existing suspension-run folder
+./scripts/visualize_benchmark.sh benchmark-results/run-YYYYMMDD-HHMMSS \
+    --also benchmark-results/ultra-YYYYMMDD-HHMMSS
+
+# Stock Chromium on the same 3 pages (~2.5 min); append onto the Ultra folder
+./scripts/benchmark_chromium.sh --output benchmark-results/ultra-YYYYMMDD-HHMMSS
 ```
 
-~22 min, graphical session, fresh profile per scenario. Outputs CSV + `summary.md` under `benchmark-results/`. For comparable runs: AC power, fixed brightness, no other heavy browsers.
+Graphical session, fresh profile per scenario. Outputs CSV + `summary.md` under `benchmark-results/`. For comparable runs: AC power, fixed brightness, no other heavy browsers.
 
 ## Architecture
 
