@@ -6,6 +6,8 @@
 
 Lightweight Linux web browser optimized for CPU, memory, and energy usage.
 
+> **Preview (v0.1).** Linux + system WebKit only. This is not a Firefox/Chrome replacement: no downloads yet, the filter applies to navigations only, and everyday sites that need HTTP Basic or pop-up-heavy flows will break. Use it as a light reader / energy-saving browser.
+
 ## Features
 
 - Standard navigation (back, forward, reload, tabs)
@@ -38,12 +40,15 @@ User data: `~/.config/liteweb/liteweb.db`
 
 ## Security
 
-- Navigation is limited to `http://`, `https://`, and `about:blank`; local or active schemes (`file:`, `data:`, `javascript:`) are rejected.
-- Web permissions (camera, microphone, geolocation, notifications) and file choosers are denied by default.
-- WebKit sandboxing is enabled, TLS errors are blocking, and remote automation is disabled.
-- The SQLite database uses mode `0600` and profile directories use mode `0700` on Unix.
+- Navigation is limited to `http://`, `https://`, and `about:blank`; local or active schemes (`file:`, `data:`, `javascript:`) are rejected. Missing or unparsable URIs fail closed.
+- Popups (`target=_blank`, `window.open`) never create an unmanaged WebView. A safe URL opens in a new LiteWeb tab; anything else is dropped. Downloads and HTTP Basic prompts are cancelled until those features exist.
+- Web permissions (camera, microphone, geolocation, notifications) and file choosers are denied by default. Fullscreen is disabled so a page cannot cover the address bar.
+- WebKit sandboxing is enabled, TLS errors are blocking, remote automation is disabled, and third-party cookies are rejected.
+- The address bar updates on the committed URL (not only when the load finishes), shows punycode for IDN hosts, and strips bidi overrides. Ultra reader pages are flattened and shipped with a strict CSP.
+- If `bwrap` is missing, the hint bar warns that the WebKit sandbox cannot start.
+- The SQLite database uses mode `0600` and profile directories use mode `0700` on Unix. Symlinked profile or database paths are refused.
 
-The built-in filter applies to navigations. It is not a complete subresource blocker such as EasyList.
+The built-in filter applies to navigations. It is not a complete subresource blocker such as EasyList. See `docs/security/2026-08-17-browser-audit.md`.
 
 ## Keyboard shortcuts
 

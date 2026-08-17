@@ -6,6 +6,8 @@
 
 Navigateur web léger pour Linux, optimisé pour la consommation de processeur, de mémoire et d'énergie.
 
+> **Preview (v0.1).** Linux + WebKit système uniquement. Ce n'est pas un remplacement de Firefox/Chrome : pas de téléchargements, le filtre ne s'applique qu'aux navigations, et les sites qui exigent HTTP Basic ou beaucoup de popups casseront. À utiliser comme lecteur léger / navigateur économe.
+
 ## Fonctionnalités
 
 - Navigation classique : retour, avant, rechargement et onglets
@@ -38,12 +40,15 @@ Données utilisateur : `~/.config/liteweb/liteweb.db`
 
 ## Sécurité
 
-- Navigation limitée à `http://`, `https://` et `about:blank` ; les schémas locaux ou actifs (`file:`, `data:`, `javascript:`) sont refusés.
-- Les permissions Web (caméra, microphone, géolocalisation, notifications) et les sélecteurs de fichiers sont refusés par défaut.
-- La sandbox WebKit est activée, les erreurs TLS bloquent le chargement et l'automatisation distante est désactivée.
-- La base SQLite utilise le mode `0600` et les répertoires de profil le mode `0700` sous Unix.
+- Navigation limitée à `http://`, `https://` et `about:blank` ; les schémas locaux ou actifs (`file:`, `data:`, `javascript:`) sont refusés. Une URI absente ou illisible est refusée.
+- Les popups (`target=_blank`, `window.open`) ne créent jamais de WebView hors politique. Une URL autorisée s'ouvre dans un onglet LiteWeb ; le reste est ignoré. Les téléchargements et l'authentification HTTP Basic sont annulés tant que ces fonctions n'existent pas.
+- Les permissions Web (caméra, microphone, géolocalisation, notifications) et les sélecteurs de fichiers sont refusés par défaut. Le plein écran est désactivé pour qu'une page ne puisse pas recouvrir la barre d'adresse.
+- La sandbox WebKit est activée, les erreurs TLS bloquent le chargement, l'automatisation distante est désactivée et les cookies tiers sont refusés.
+- La barre d'adresse se met à jour sur l'URL validée (pas seulement à la fin du chargement), affiche le punycode des hôtes IDN et retire les contrôles bidi. Les pages Ultra sont aplaties et servies avec une CSP stricte.
+- Si `bwrap` est absent, la barre d'aide prévient que la sandbox WebKit ne peut pas démarrer.
+- La base SQLite utilise le mode `0600` et les répertoires de profil le mode `0700` sous Unix. Les chemins de profil ou de base qui sont des liens symboliques sont refusés.
 
-Le filtre intégré agit sur les navigations. Il ne remplace pas un bloqueur complet de sous-ressources de type EasyList.
+Le filtre intégré agit sur les navigations. Il ne remplace pas un bloqueur complet de sous-ressources de type EasyList. Voir `docs/security/2026-08-17-browser-audit.md`.
 
 ## Raccourcis clavier
 
