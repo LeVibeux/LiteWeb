@@ -10,6 +10,7 @@ pub enum CommandAction {
     EcoOn,
     EcoOff,
     EcoAggressive,
+    EcoUltra,
     BookmarkAdd,
     BookmarkList,
     History,
@@ -64,6 +65,7 @@ impl CommandPalette {
                 "on" => CommandAction::EcoOn,
                 "off" => CommandAction::EcoOff,
                 "aggressive" | "agg" => CommandAction::EcoAggressive,
+                "ultra" | "u" => CommandAction::EcoUltra,
                 _ => CommandAction::EcoOn,
             },
             "bookmark" | "bm" => match arg.to_lowercase().as_str() {
@@ -171,6 +173,12 @@ mod tests {
     #[test]
     fn parses_tab_index_still_works() {
         assert_eq!(CommandPalette::parse(":tab 2"), CommandAction::Tab(1));
+    }
+
+    #[test]
+    fn parses_eco_ultra() {
+        assert_eq!(CommandPalette::parse(":eco ultra"), CommandAction::EcoUltra);
+        assert_eq!(CommandPalette::parse(":eco u"), CommandAction::EcoUltra);
     }
 
     #[test]

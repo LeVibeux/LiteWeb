@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use gio::Cancellable;
 use gdk_pixbuf::prelude::*;
 use gdk_pixbuf::{InterpType, Pixbuf, PixbufLoader};
 use gtk::prelude::*;
@@ -10,14 +11,14 @@ use gtk::{
     MessageDialog, Notebook, Orientation, ScrolledWindow, Separator,
 };
 use pango::EllipsizeMode;
-use webkit2gtk::{LoadEvent, WebView, WebViewExt};
+use webkit2gtk::{LoadEvent, UserContentManager, WebResourceExt, WebView, WebViewExt};
 
 const KEYBAR_NORMAL: &str =
     "Ctrl+L URL  |  : commandes  |  Ctrl+T onglet  |  Ctrl+W fermer  |  Ctrl+Tab suivant  |  Alt+←/→ nav  |  F5 recharger  |  Ctrl+D favori  |  Ctrl+Shift+E éco";
 const KEYBAR_URL: &str =
     "Entrée → naviguer  |  Ctrl+L focus  |  : → barre commande  |  Échap → annuler";
 const KEYBAR_COMMAND: &str =
-    ":open :tab new|next|prev|N :suspend :suspend-all :eco on|off|aggressive :bookmark :history  |  Entrée → exécuter  |  Échap → annuler";
+    ":open :tab new|next|prev|N :suspend :suspend-all :eco on|off|aggressive|ultra :bookmark :history  |  Entrée → exécuter  |  Échap → annuler";
 const LOGO_BYTES: &[u8] = include_bytes!("../../assets/liteweb-logo-grok.jpg");
 
 use crate::adblock::Blocker;
@@ -25,7 +26,10 @@ use crate::benchmark::{
     BenchmarkConfig, BenchmarkReporter, BenchmarkScenario, IDLE_MEASUREMENT_SECS,
     POST_SUSPENSION_SECS, WARMUP_SECS,
 };
-use crate::browser::{create_web_context, create_webview, TabManager};
+use crate::browser::{
+    apply_webview_policy, create_user_content_manager, create_web_context, create_webview,
+    flatten_html, set_archaic_stylesheet, TabManager,
+};
 use crate::commands::{is_safe_navigation_url, CommandAction, CommandPalette};
 use crate::energy::{EnergyLevel, EnergyManager};
 use crate::storage::Storage;
@@ -59,6 +63,7 @@ struct AppState {
     energy: EnergyManager,
     blocker: Rc<Blocker>,
     web_context: webkit2gtk::WebContext,
+    user_content: UserContentManager,
     notebook: Notebook,
     url_entry: Entry,
     command_entry: Entry,
@@ -84,6 +89,7 @@ impl BrowserWindow {
         let blocker = Rc::new(Blocker::new());
         let storage = Storage::open();
         let web_context = create_web_context();
+        let user_content = create_user_content_manager();
 
         let window = ApplicationWindow::builder()
             .application(app)
@@ -133,6 +139,10 @@ impl BrowserWindow {
                 BenchmarkScenario::Idle | BenchmarkScenario::Normal => {}
             }
         }
+        set_archaic_stylesheet(
+            &user_content,
+            energy.level().webview_policy().archaic_stylesheet,
+        );
         let benchmark_run = benchmark.map(|config| BenchmarkRun {
             reporter: BenchmarkReporter::new(config),
             warmup_reported: false,
@@ -146,6 +156,7 @@ impl BrowserWindow {
             energy,
             blocker: blocker.clone(),
             web_context,
+            user_content,
             notebook: notebook.clone(),
             url_entry: url_entry.clone(),
             command_entry: command_bar.command_entry.clone(),
@@ -200,7 +211,7 @@ impl BrowserWindow {
         bookmark.set_tooltip_text(Some("Ajouter aux favoris (Ctrl+D)"));
 
         let eco = Button::with_label("⚡");
-        eco.set_tooltip_text(Some("Mode économie (Ctrl+Shift+E)"));
+        eco.set_tooltip_text(Some("Mode économie : Normal → Éco → Agressif → Ultra (Ctrl+Shift+E)"));
 
         let eco_label = Label::new(Some("Mode: Normal"));
         let block_label = Label::new(Some("Bloqués: 0"));
@@ -644,6 +655,8 @@ impl BrowserWindow {
             let mut st = state.borrow_mut();
             let web_context = st.web_context.clone();
             let blocker = st.blocker.clone();
+            let user_content = st.user_content.clone();
+            let policy = st.energy.level().webview_policy();
             let storage = st.storage.clone();
             let state_for_tabs = state.clone();
 
@@ -651,7 +664,7 @@ impl BrowserWindow {
                 if tab.is_suspended() || tab.webview.is_some() {
                     continue;
                 }
-                let wv = create_webview(&web_context, blocker.clone());
+                let wv = create_webview(&web_context, blocker.clone(), &user_content, policy);
                 Self::connect_webview(wv.clone(), tab.id, state_for_tabs.clone(), storage.clone());
                 tab.webview = Some(wv);
             }
@@ -667,6 +680,8 @@ impl BrowserWindow {
             let active = st.tabs.active_index();
             let web_context = st.web_context.clone();
             let blocker = st.blocker.clone();
+            let user_content = st.user_content.clone();
+            let policy = st.energy.level().webview_policy();
             let storage = st.storage.clone();
             let state_for_tabs = state.clone();
 
@@ -690,7 +705,12 @@ impl BrowserWindow {
                     page_box.pack_start(&info, true, true, 0);
                 } else {
                     if tab.webview.is_none() {
-                        let wv = create_webview(&web_context, blocker.clone());
+                        let wv = create_webview(
+                            &web_context,
+                            blocker.clone(),
+                            &user_content,
+                            policy,
+                        );
                         Self::connect_webview(
                             wv.clone(),
                             tab.id,
@@ -785,15 +805,19 @@ impl BrowserWindow {
             }
             let uri = view.uri();
             let title = view.title();
+            let view = view.clone();
             let storage = storage.clone();
             let state_load = state_load.clone();
             glib::idle_add_local_once(move || {
-                if let Some(uri) = uri {
-                    if !is_safe_navigation_url(&uri) {
-                        return;
-                    }
-                    let title = title.unwrap_or_else(|| uri.clone());
-                    storage.add_history(&uri, &title);
+                let Some(uri) = uri else {
+                    return;
+                };
+                if !is_safe_navigation_url(&uri) {
+                    return;
+                }
+                let title = title.unwrap_or_else(|| uri.clone());
+                storage.add_history(&uri, &title);
+                let flatten = {
                     let mut st = state_load.borrow_mut();
                     if let Some(tab_index) = st.tabs.index_of_id(tab_id) {
                         let tab = &mut st.tabs.tabs_mut()[tab_index];
@@ -806,6 +830,10 @@ impl BrowserWindow {
                     }
                     st.block_label
                         .set_text(&format!("Bloqués: {}", st.blocker.blocked_count()));
+                    st.energy.level().webview_policy().flatten_document
+                };
+                if flatten {
+                    Self::flatten_finished_load(view, uri.to_string(), tab_id, state_load);
                 }
             });
         });
@@ -844,6 +872,7 @@ impl BrowserWindow {
         if let Some(tab) = st.tabs.tabs_mut().get_mut(idx) {
             tab.url = url.clone();
             tab.wake();
+            tab.reader_pending = false;
             if let Some(wv) = &tab.webview {
                 wv.load_uri(&url);
             }
@@ -878,6 +907,9 @@ impl BrowserWindow {
     }
 
     fn reload(state: Rc<RefCell<AppState>>) {
+        if let Some(tab) = state.borrow_mut().tabs.active_tab_mut() {
+            tab.reader_pending = false;
+        }
         if let Some(wv) = state
             .borrow()
             .tabs
@@ -919,11 +951,93 @@ impl BrowserWindow {
     }
 
     fn toggle_eco(state: Rc<RefCell<AppState>>) {
-        let level = state.borrow_mut().energy.toggle();
-        state
-            .borrow()
-            .eco_label
-            .set_text(&format!("Mode: {}", level.label()));
+        state.borrow_mut().energy.toggle();
+        Self::apply_energy_to_live_tabs(state.clone());
+        Self::update_chrome(state);
+    }
+
+    fn apply_energy_to_live_tabs(state: Rc<RefCell<AppState>>) {
+        let (policy, webviews, content) = {
+            let st = state.borrow();
+            let policy = st.energy.level().webview_policy();
+            let webviews: Vec<WebView> = st
+                .tabs
+                .tabs()
+                .iter()
+                .filter_map(|tab| tab.webview.clone())
+                .collect();
+            (policy, webviews, st.user_content.clone())
+        };
+        set_archaic_stylesheet(&content, policy.archaic_stylesheet);
+        for webview in &webviews {
+            apply_webview_policy(webview, policy);
+        }
+        {
+            let mut st = state.borrow_mut();
+            for tab in st.tabs.tabs_mut() {
+                tab.reader_pending = false;
+            }
+        }
+        for webview in webviews {
+            if let Some(uri) = webview.uri() {
+                if is_safe_navigation_url(&uri) && uri != "about:blank" {
+                    webview.reload();
+                }
+            }
+        }
+    }
+
+    fn flatten_finished_load(
+        view: WebView,
+        uri: String,
+        tab_id: usize,
+        state: Rc<RefCell<AppState>>,
+    ) {
+        if uri == "about:blank" {
+            return;
+        }
+
+        let already_flat = {
+            let st = state.borrow();
+            st.tabs
+                .index_of_id(tab_id)
+                .and_then(|index| st.tabs.tabs().get(index))
+                .map(|tab| tab.reader_pending)
+                .unwrap_or(false)
+        };
+        if already_flat {
+            if let Some(index) = state.borrow().tabs.index_of_id(tab_id) {
+                state.borrow_mut().tabs.tabs_mut()[index].reader_pending = false;
+            }
+            return;
+        }
+
+        let Some(resource) = view.main_resource() else {
+            Self::replace_with_reader(&view, "", &uri, tab_id, state);
+            return;
+        };
+
+        let view = view.clone();
+        WebResourceExt::data(&resource, None::<&Cancellable>, move |result| {
+            let html = result
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_default();
+            Self::replace_with_reader(&view, &html, &uri, tab_id, state);
+        });
+    }
+
+    fn replace_with_reader(
+        view: &WebView,
+        html: &str,
+        uri: &str,
+        tab_id: usize,
+        state: Rc<RefCell<AppState>>,
+    ) {
+        let flat = flatten_html(html, uri);
+        if let Some(index) = state.borrow().tabs.index_of_id(tab_id) {
+            state.borrow_mut().tabs.tabs_mut()[index].reader_pending = true;
+        }
+        view.load_html(&flat, Some(uri));
     }
 
     fn run_command(state: Rc<RefCell<AppState>>, input: &str) {
@@ -961,10 +1075,12 @@ impl BrowserWindow {
             }
             CommandAction::EcoOn => {
                 state_cmd.borrow_mut().energy.set_level(EnergyLevel::Eco);
+                Self::apply_energy_to_live_tabs(state_cmd.clone());
                 Self::update_chrome(state_cmd.clone());
             }
             CommandAction::EcoOff => {
                 state_cmd.borrow_mut().energy.set_level(EnergyLevel::Normal);
+                Self::apply_energy_to_live_tabs(state_cmd.clone());
                 Self::update_chrome(state_cmd.clone());
             }
             CommandAction::EcoAggressive => {
@@ -972,6 +1088,12 @@ impl BrowserWindow {
                     .borrow_mut()
                     .energy
                     .set_level(EnergyLevel::Aggressive);
+                Self::apply_energy_to_live_tabs(state_cmd.clone());
+                Self::update_chrome(state_cmd.clone());
+            }
+            CommandAction::EcoUltra => {
+                state_cmd.borrow_mut().energy.set_level(EnergyLevel::Ultra);
+                Self::apply_energy_to_live_tabs(state_cmd.clone());
                 Self::update_chrome(state_cmd.clone());
             }
             CommandAction::BookmarkAdd => Self::bookmark_current(state_cmd.clone()),
