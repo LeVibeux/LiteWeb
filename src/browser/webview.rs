@@ -15,17 +15,15 @@ use crate::commands::is_safe_navigation_url;
 use crate::energy::WebViewPolicy;
 
 pub const ARCHAIC_STYLESHEET: &str = r#"
-html, body { background: #f4f1e8 !important; color: #1a1a1a !important; }
+html, body { background: #f4f1e8 !important; color: #1a1a1a !important; overflow-y: auto !important; height: auto !important; }
 * {
   animation: none !important;
   animation-duration: 0s !important;
   transition: none !important;
   scroll-behavior: auto !important;
   backdrop-filter: none !important;
-  filter: none !important;
   box-shadow: none !important;
   text-shadow: none !important;
-  transform: none !important;
 }
 video, audio, canvas, iframe, svg, [role="dialog"] { display: none !important; }
 nav, aside, footer, header, [role="navigation"], [role="banner"], [role="complementary"] {

@@ -14,7 +14,7 @@ const KEEP_TAGS: &[&str] = &[
 ];
 
 const READER_CSS: &str = r#"
-html, body { background: #f4f1e8; color: #1a1a1a; }
+html, body { background: #f4f1e8; color: #1a1a1a; overflow-y: auto; height: auto; }
 body { max-width: 40rem; margin: 1.5rem auto; padding: 0 1rem; font: 18px/1.55 Georgia, "Times New Roman", serif; }
 .liteweb-ultra-banner { font: 14px/1.4 sans-serif; color: #4a4033; border-bottom: 1px solid #d4cbb8; padding-bottom: 0.75rem; }
 a { color: #1a365d; }
@@ -180,5 +180,14 @@ mod tests {
         );
         assert!(out.contains(ULTRA_BANNER_FR));
         assert!(out.contains("<article"));
+    }
+
+    #[test]
+    fn reader_document_enables_vertical_overflow() {
+        let out = flatten_html(ARTICLE, "https://example.com/news");
+        assert!(
+            out.contains("overflow-y: auto") || out.contains("overflow-y:scroll"),
+            "flattened Ultra pages must be explicitly scrollable, got: {out}"
+        );
     }
 }

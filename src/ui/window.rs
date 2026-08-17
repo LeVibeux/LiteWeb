@@ -8,7 +8,7 @@ use gdk_pixbuf::{InterpType, Pixbuf, PixbufLoader};
 use gtk::prelude::*;
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, Entry, Image, Inhibit, Label,
-    MessageDialog, Notebook, Orientation, ScrolledWindow, Separator,
+    MessageDialog, Notebook, Orientation, Separator,
 };
 use pango::EllipsizeMode;
 use webkit2gtk::{LoadEvent, UserContentManager, WebResourceExt, WebView, WebViewExt};
@@ -137,7 +137,7 @@ impl BrowserWindow {
             match config.scenario {
                 BenchmarkScenario::Aggressive => energy.set_level(EnergyLevel::Aggressive),
                 BenchmarkScenario::Ultra => energy.set_level(EnergyLevel::Ultra),
-                BenchmarkScenario::Idle | BenchmarkScenario::Normal => {}
+                BenchmarkScenario::Idle | BenchmarkScenario::Normal | BenchmarkScenario::Loaded => {}
             }
         }
         set_archaic_stylesheet(
@@ -722,12 +722,13 @@ impl BrowserWindow {
                     }
 
                     if let Some(wv) = &tab.webview {
-                        let scrolled =
-                            ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
-                        scrolled.add(wv);
-                        scrolled.set_hexpand(true);
-                        scrolled.set_vexpand(true);
-                        page_box.pack_start(&scrolled, true, true, 0);
+                        // WebKit2 WebView scrolls itself. Wrapping it in
+                        // GtkScrolledWindow swallows wheel events once Ultra
+                        // disables GPU compositing (software path uses GTK
+                        // routing, and the child already fills the viewport).
+                        wv.set_hexpand(true);
+                        wv.set_vexpand(true);
+                        page_box.pack_start(wv, true, true, 0);
 
                         let url = tab.url.clone();
                         if is_safe_navigation_url(&url) && url != "about:blank" {
@@ -1047,6 +1048,7 @@ impl BrowserWindow {
         let flat = flatten_html(&html, &uri);
         Self::set_reader_pending(&state, tab_id, true);
         view.load_html(&flat, Some(&uri));
+        view.grab_focus();
     }
 
     fn run_command(state: Rc<RefCell<AppState>>, input: &str) {
@@ -1162,6 +1164,19 @@ impl BrowserWindow {
 
     fn start_energy_timer(state: Rc<RefCell<AppState>>) {
         glib::timeout_add_local(Duration::from_secs(30), move || {
+            let hold_pages = {
+                let st = state.borrow();
+                st.benchmark
+                    .as_ref()
+                    .map(|run| !run.reporter.scenario().uses_suspension())
+                    .unwrap_or(false)
+            };
+            // Loaded/Ultra compare live engine cost. Ultra's 15s/1-tab policy
+            // would otherwise drop two of the three pages at the first 30s tick.
+            if hold_pages {
+                return glib::Continue(true);
+            }
+
             // GTK notebook selection emits deferred callbacks during startup.
             // In benchmark runs, force the non-measured blank sentinel as the
             // logical active tab before evaluating inactivity. This keeps all
@@ -1170,7 +1185,7 @@ impl BrowserWindow {
                 let st = state.borrow();
                 st.benchmark
                     .as_ref()
-                    .filter(|run| !matches!(run.reporter.scenario(), BenchmarkScenario::Idle))
+                    .filter(|run| run.reporter.scenario().uses_suspension())
                     .map(|_| st.tabs.tabs().len().saturating_sub(1))
             };
             if let Some(sentinel) = sentinel {
@@ -1236,7 +1251,7 @@ impl BrowserWindow {
             .borrow()
             .benchmark
             .as_ref()
-            .map(|run| !matches!(run.reporter.scenario(), BenchmarkScenario::Idle))
+            .map(|run| run.reporter.scenario().uses_suspension())
             .unwrap_or(false);
         if !has_sentinel {
             return;
@@ -1286,12 +1301,12 @@ impl BrowserWindow {
                 }
 
                 let complete = match run.reporter.scenario() {
-                    BenchmarkScenario::Idle => {
+                    BenchmarkScenario::Idle
+                    | BenchmarkScenario::Loaded
+                    | BenchmarkScenario::Ultra => {
                         elapsed >= Duration::from_secs(WARMUP_SECS + IDLE_MEASUREMENT_SECS)
                     }
-                    BenchmarkScenario::Normal
-                    | BenchmarkScenario::Aggressive
-                    | BenchmarkScenario::Ultra => run
+                    BenchmarkScenario::Normal | BenchmarkScenario::Aggressive => run
                         .all_suspended_at
                         .map(|at| at.elapsed() >= Duration::from_secs(POST_SUSPENSION_SECS))
                         .unwrap_or(false),
