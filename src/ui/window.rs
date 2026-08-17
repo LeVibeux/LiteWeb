@@ -1007,38 +1007,46 @@ impl BrowserWindow {
                 .unwrap_or(false)
         };
         if already_flat {
-            if let Some(index) = state.borrow().tabs.index_of_id(tab_id) {
-                state.borrow_mut().tabs.tabs_mut()[index].reader_pending = false;
-            }
+            Self::set_reader_pending(&state, tab_id, false);
             return;
         }
 
         let Some(resource) = view.main_resource() else {
-            Self::replace_with_reader(&view, "", &uri, tab_id, state);
+            Self::replace_with_reader(view, String::new(), uri, tab_id, state);
             return;
         };
 
-        let view = view.clone();
         WebResourceExt::data(&resource, None::<&Cancellable>, move |result| {
             let html = result
                 .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
                 .unwrap_or_default();
-            Self::replace_with_reader(&view, &html, &uri, tab_id, state);
+            // WebKit may invoke this trampoline while a RefCell borrow is
+            // still live; finish the replace on the next idle turn.
+            glib::idle_add_local_once(move || {
+                Self::replace_with_reader(view, html, uri, tab_id, state);
+            });
         });
     }
 
+    fn set_reader_pending(state: &Rc<RefCell<AppState>>, tab_id: usize, pending: bool) {
+        let index = state.borrow().tabs.index_of_id(tab_id);
+        if let Some(index) = index {
+            if let Some(tab) = state.borrow_mut().tabs.tabs_mut().get_mut(index) {
+                tab.reader_pending = pending;
+            }
+        }
+    }
+
     fn replace_with_reader(
-        view: &WebView,
-        html: &str,
-        uri: &str,
+        view: WebView,
+        html: String,
+        uri: String,
         tab_id: usize,
         state: Rc<RefCell<AppState>>,
     ) {
-        let flat = flatten_html(html, uri);
-        if let Some(index) = state.borrow().tabs.index_of_id(tab_id) {
-            state.borrow_mut().tabs.tabs_mut()[index].reader_pending = true;
-        }
-        view.load_html(&flat, Some(uri));
+        let flat = flatten_html(&html, &uri);
+        Self::set_reader_pending(&state, tab_id, true);
+        view.load_html(&flat, Some(&uri));
     }
 
     fn run_command(state: Rc<RefCell<AppState>>, input: &str) {
