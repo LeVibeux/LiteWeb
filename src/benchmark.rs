@@ -28,6 +28,7 @@ pub enum BenchmarkScenario {
     Idle,
     Normal,
     Aggressive,
+    Ultra,
 }
 
 impl BenchmarkScenario {
@@ -36,6 +37,7 @@ impl BenchmarkScenario {
             "idle" => Some(Self::Idle),
             "normal" => Some(Self::Normal),
             "aggressive" => Some(Self::Aggressive),
+            "ultra" => Some(Self::Ultra),
             _ => None,
         }
     }
@@ -45,13 +47,14 @@ impl BenchmarkScenario {
             Self::Idle => "idle",
             Self::Normal => "normal",
             Self::Aggressive => "aggressive",
+            Self::Ultra => "ultra",
         }
     }
 
     pub fn expected_suspended_tabs(self) -> usize {
         match self {
             Self::Idle => 0,
-            Self::Normal | Self::Aggressive => BENCHMARK_URLS.len(),
+            Self::Normal | Self::Aggressive | Self::Ultra => BENCHMARK_URLS.len(),
         }
     }
 }
@@ -78,10 +81,10 @@ impl BenchmarkConfig {
 
         let scenario_value = args
             .get(position + 1)
-            .ok_or_else(|| "--benchmark requires idle, normal, or aggressive".to_string())?;
+            .ok_or_else(|| "--benchmark requires idle, normal, aggressive, or ultra".to_string())?;
         let scenario = BenchmarkScenario::parse(scenario_value).ok_or_else(|| {
             format!(
-                "unknown benchmark scenario '{scenario_value}'; expected idle, normal, or aggressive"
+                "unknown benchmark scenario '{scenario_value}'; expected idle, normal, aggressive, or ultra"
             )
         })?;
 
@@ -103,7 +106,9 @@ impl BenchmarkConfig {
     pub fn initial_urls(&self) -> Vec<String> {
         match self.scenario {
             BenchmarkScenario::Idle => vec![BENCHMARK_URLS[0].to_string()],
-            BenchmarkScenario::Normal | BenchmarkScenario::Aggressive => {
+            BenchmarkScenario::Normal
+            | BenchmarkScenario::Aggressive
+            | BenchmarkScenario::Ultra => {
                 let mut urls = BENCHMARK_URLS
                     .iter()
                     .map(|url| (*url).to_string())
@@ -195,7 +200,26 @@ mod tests {
             BenchmarkScenario::parse("aggressive"),
             Some(BenchmarkScenario::Aggressive)
         );
+        assert_eq!(
+            BenchmarkScenario::parse("ultra"),
+            Some(BenchmarkScenario::Ultra)
+        );
         assert_eq!(BenchmarkScenario::parse("eco"), None);
+    }
+
+    #[test]
+    fn ultra_workload_matches_aggressive() {
+        let config = BenchmarkConfig {
+            scenario: BenchmarkScenario::Ultra,
+            state_file: PathBuf::from("/tmp/liteweb-benchmark-state.tsv"),
+        };
+        let urls = config.initial_urls();
+        assert_eq!(urls.len(), BENCHMARK_URLS.len() + 1);
+        assert_eq!(urls.last().map(String::as_str), Some("about:blank"));
+        assert_eq!(
+            config.scenario.expected_suspended_tabs(),
+            BENCHMARK_URLS.len()
+        );
     }
 
     #[test]

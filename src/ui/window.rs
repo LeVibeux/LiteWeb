@@ -136,6 +136,7 @@ impl BrowserWindow {
         if let Some(config) = &benchmark {
             match config.scenario {
                 BenchmarkScenario::Aggressive => energy.set_level(EnergyLevel::Aggressive),
+                BenchmarkScenario::Ultra => energy.set_level(EnergyLevel::Ultra),
                 BenchmarkScenario::Idle | BenchmarkScenario::Normal => {}
             }
         }
@@ -1280,7 +1281,9 @@ impl BrowserWindow {
                     BenchmarkScenario::Idle => {
                         elapsed >= Duration::from_secs(WARMUP_SECS + IDLE_MEASUREMENT_SECS)
                     }
-                    BenchmarkScenario::Normal | BenchmarkScenario::Aggressive => run
+                    BenchmarkScenario::Normal
+                    | BenchmarkScenario::Aggressive
+                    | BenchmarkScenario::Ultra => run
                         .all_suspended_at
                         .map(|at| at.elapsed() >= Duration::from_secs(POST_SUSPENSION_SECS))
                         .unwrap_or(false),

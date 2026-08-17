@@ -23,8 +23,9 @@ usage() {
   cat <<'EOF'
 Usage: ./scripts/benchmark_consumption.sh [--output DIRECTORY]
 
-Runs the idle, normal, and aggressive LiteWeb consumption scenarios. Results
-are written to benchmark-results/ by default. The full run takes about 15 min.
+Runs the idle, normal, aggressive, and ultra LiteWeb consumption scenarios.
+Results are written to benchmark-results/ by default. The full run takes about
+20 min.
 EOF
 }
 
@@ -123,12 +124,14 @@ run_scenario() {
   current_runtime="$runtime"
 
   # Hard cap so a stuck suspension policy cannot hang the whole suite.
-  # idle: ~150s; normal: 600s timeout + margins; aggressive: 60s + margins.
+  # idle: ~150s; normal: 600s timeout + margins; aggressive: 60s + margins;
+  # ultra: 15s policy, first energy tick at 30s + margins.
   local max_seconds=240
   case "$scenario" in
     idle) max_seconds=240 ;;
     normal) max_seconds=900 ;;
     aggressive) max_seconds=420 ;;
+    ultra) max_seconds=240 ;;
   esac
 
   printf 'wall_time_ms,elapsed_s,active_state,cpu_usage_ns,memory_current_bytes,memory_peak_bytes,cpu_percent\n' > "$samples"
@@ -260,6 +263,7 @@ run_scenario() {
 run_scenario idle
 run_scenario normal
 run_scenario aggressive
+run_scenario ultra
 
 cat >> "$OUTPUT_DIR/summary.md" <<'EOF'
 
@@ -268,8 +272,10 @@ cat >> "$OUTPUT_DIR/summary.md" <<'EOF'
 - One fresh LiteWeb profile per scenario; CPU and memory are collected from its
   user cgroup, including WebKit subprocesses.
 - `idle`: Google homepage only, after a 30-second warmup.
-- `normal` and `aggressive`: ten fixed public pages plus one active blank
-  sentinel tab, so all ten measured pages can become inactive.
+- `normal`, `aggressive`, and `ultra`: ten fixed public pages plus one active
+  blank sentinel tab, so all ten measured pages can become inactive.
+- `ultra` also disables JavaScript, images, media and GPU, then flattens each
+  page to a reader document. Its interesting number is RAM before suspend.
 - Results are most useful when the computer is plugged in, brightness is fixed,
   and no other browser or heavy process is running.
 

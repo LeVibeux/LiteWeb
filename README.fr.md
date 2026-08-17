@@ -10,7 +10,7 @@ Navigateur web léger pour Linux, optimisé pour la consommation de processeur, 
 
 - Navigation classique : retour, avant, rechargement et onglets
 - Blocage des navigations vers des domaines publicitaires et de traçage (environ 50 domaines à fort impact)
-- Modes économie d'énergie (Normal / Éco / Agressif) avec suspension automatique des onglets inactifs
+- Modes économie d'énergie (Normal / Éco / Agressif / Ultra) avec suspension automatique des onglets inactifs
 - Historique et favoris dans une base SQLite locale
 - Raccourcis clavier et palette de commandes (`:`)
 
@@ -67,20 +67,23 @@ Le filtre intégré agit sur les navigations. Il ne remplace pas un bloqueur com
 :tab 2
 :suspend
 :suspend-all
-:eco on|off|aggressive
+:eco on|off|aggressive|ultra
 :bookmark list
 :history
 ```
 
 ## Modes énergie
 
-| Mode | Suspension après | Onglets actifs maximum |
-|------|------------------|------------------------|
-| Normal | 10 min | 20 |
-| Éco | 3 min | 10 |
-| Agressif | 1 min | 5 |
+| Mode | Suspension après | Onglets actifs maximum | Moteur de page |
+|------|------------------|------------------------|----------------|
+| Normal | 10 min | 20 | WebKit complet |
+| Éco | 3 min | 10 | WebKit complet |
+| Agressif | 1 min | 5 | WebKit complet |
+| Ultra | 15 s | 1 | Sans JS, images, médias ni GPU ; page aplatie en mode lecture |
 
 Les onglets suspendus libèrent leur WebView, ce qui réduit fortement l'usage de mémoire, et se réactivent au clic.
+
+**Ultra** est le mode lecture / urgence. Il recharge les onglets vivants en article dépouillé (plus de JavaScript, d'images ni de médias). Les applications web qui exigent du JS seront vides ; revenir en arrière avec `Ctrl+Shift+E` ou `:eco off`.
 
 ## Benchmark de consommation
 
@@ -109,6 +112,7 @@ CPU/RAM du cgroup LiteWeb + enfants WebKit. Charge : 10 pages publiques fixes + 
 - Le gain principal est la **RAM** : un onglet suspendu libère sa WebView ; seul l’onglet blank actif garde un moteur vivant. D’où une RAM « après » parfois *inférieure* au baseline idle (Google encore chargé).
 - **Normal** attend les 10 min d’inactivité, puis suspend les 10 pages d’un coup → plus grosse chute de mémoire, la plus « propre ».
 - **Agressif** commence par la limite d’onglets actifs (~30 s, 6 onglets), puis le timeout 1 min (~60 s, 10/10) → même type d’économie, beaucoup plus tôt.
+- **Ultra** vise la RAM *pendant que les pages sont encore chargées* (pas de tas JS, pas d’images décodées). Relancer le banc pour remplir une ligne Ultra ; la RAM après suspension n’est pas l’argument propre à Ultra.
 - Le **CPU** reste bas une fois suspendu ; les pics de chargement ne comptent pas dans la fenêtre « après ». Le banc mesure CPU/RAM cgroup, pas les watts à la prise, et n’attribue pas l’économie CPU à un throttling JavaScript.
 - Les chiffres dépendent de la machine et du poids réel des pages ; relancer localement pour ton matériel.
 
@@ -119,7 +123,7 @@ CPU/RAM du cgroup LiteWeb + enfants WebKit. Charge : 10 pages publiques fixes + 
 ./scripts/visualize_benchmark.sh benchmark-results/run-YYYYMMDD-HHMMSS   # nécessite gnuplot
 ```
 
-~15 min, session graphique, profil frais par scénario. Sorties CSV + `summary.md` sous `benchmark-results/`. Pour comparer : secteur, luminosité fixe, pas d’autres navigateurs lourds.
+~20 min, session graphique, profil frais par scénario. Sorties CSV + `summary.md` sous `benchmark-results/`. Pour comparer : secteur, luminosité fixe, pas d’autres navigateurs lourds.
 
 ## Architecture
 
