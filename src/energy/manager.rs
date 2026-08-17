@@ -74,8 +74,11 @@ impl EnergyLevel {
             webrtc: false,
             html5_local_storage: !nuclear,
             html5_database: !nuclear,
-            hardware_acceleration: !nuclear,
-            smooth_scrolling: !nuclear,
+            // Keep the accelerated compositor and smooth scrolling. Two-finger
+            // trackpads emit GDK_SCROLL_SMOOTH; WebKit only consumes those on
+            // this path. JS/images/media remain the RAM win.
+            hardware_acceleration: true,
+            smooth_scrolling: true,
             archaic_stylesheet: nuclear,
             flatten_document: nuclear,
         }
@@ -180,10 +183,21 @@ mod tests {
         assert!(!p.webrtc);
         assert!(!p.html5_local_storage);
         assert!(!p.html5_database);
-        assert!(!p.hardware_acceleration);
-        assert!(!p.smooth_scrolling);
         assert!(p.archaic_stylesheet);
         assert!(p.flatten_document);
+    }
+
+    #[test]
+    fn ultra_keeps_touchpad_scroll_path() {
+        let p = EnergyLevel::Ultra.webview_policy();
+        assert!(
+            p.smooth_scrolling,
+            "two-finger trackpads emit GDK_SCROLL_SMOOTH; WebKit drops them if smooth scrolling is off"
+        );
+        assert!(
+            p.hardware_acceleration,
+            "software compositing (HA Never) does not consume trackpad SMOOTH events"
+        );
     }
 
     #[test]

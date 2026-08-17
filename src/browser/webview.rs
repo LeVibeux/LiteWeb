@@ -212,6 +212,10 @@ mod tests {
     #[test]
     fn ultra_switches_are_all_off() {
         let s = engine_switches(EnergyLevel::Ultra.webview_policy());
-        assert!(!s.javascript && !s.images && !s.media && !s.hardware_acceleration);
+        assert!(!s.javascript && !s.images && !s.media);
+        assert!(
+            s.hardware_acceleration,
+            "Ultra must keep the compositor that handles trackpad SMOOTH events"
+        );
     }
 }
