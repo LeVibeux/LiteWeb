@@ -10,6 +10,9 @@ Creates readable SVG charts in BENCHMARK_RESULT_DIRECTORY/charts/:
   - memory-over-time.svg  — idle/normal/aggressive, shared linear scale
   - cpu-over-time.svg     — same series, shared log Y scale
   - memory-summary.svg    — before/after bars with MiB labels
+  - memory-loaded.svg     — loaded vs ultra (3 live pages), if present
+  - cpu-loaded.svg
+  - memory-loaded-summary.svg
 
 Vertical markers show when tabs start suspending / are all suspended
 (from events-*.csv). Shutdown samples (inactive, zero mem, negative CPU)
@@ -210,7 +213,9 @@ PY
 SUMMARY_PLOT="$FILTERED/summary-bars.csv"
 awk -F ',' 'BEGIN { OFS=","; print "scenario,before,after" }
   NR == 1 { next }
-  { printf "%s,%.2f,%.2f\n", $1, $4+0, $5+0 }
+  $1 == "idle" || $1 == "normal" || $1 == "aggressive" {
+    printf "%s,%.2f,%.2f\n", $1, $4+0, $5+0
+  }
 ' "$RUN_DIR/summary.csv" > "$SUMMARY_PLOT"
 
 gnuplot 2>"$CHARTS/gnuplot.err" <<GNUPLOT
@@ -314,10 +319,139 @@ if [[ ! -s "$CHARTS/memory-over-time.svg" || ! -s "$CHARTS/cpu-over-time.svg" ||
 fi
 rm -f "$CHARTS/gnuplot.err"
 
+if [[ -f "$RUN_DIR/samples-loaded.csv" && -f "$RUN_DIR/samples-ultra.csv" ]]; then
+  filter_samples "$RUN_DIR/samples-loaded.csv" "$FILTERED/samples-loaded.csv"
+  filter_samples "$RUN_DIR/samples-ultra.csv" "$FILTERED/samples-ultra.csv"
+  for scenario in loaded ultra; do
+    awk -F ',' 'BEGIN { OFS="," }
+      NR == 1 { print; next }
+      {
+        cpu = $7 + 0
+        if (cpu < 0.01) cpu = 0.01
+        $7 = sprintf("%.4f", cpu)
+        print
+      }
+    ' "$FILTERED/samples-${scenario}.csv" > "$FILTERED/samples-${scenario}-log.csv"
+  done
+  loaded_limits="$(
+    awk -F ',' '
+      FNR == 1 { next }
+      {
+        t = $2 + 0; m = $5 / 1048576; c = $7 + 0
+        if (t > xmax) xmax = t
+        if (m > memmax) memmax = m
+        if (c > cpumax) cpumax = c
+      }
+      END {
+        if (xmax < 1) xmax = 1
+        if (memmax < 1) memmax = 1
+        if (cpumax < 1) cpumax = 1
+        printf "%.3f %.2f %.2f\n", xmax * 1.02, memmax * 1.10, cpumax * 1.15
+      }
+    ' "$FILTERED/samples-loaded.csv" "$FILTERED/samples-ultra.csv"
+  )"
+  # shellcheck disable=SC2086
+  set -- $loaded_limits
+  LX_MAX="$1"
+  LMEM_MAX="$2"
+  LCPU_MAX="$3"
+  LOADED_SUMMARY="$FILTERED/loaded-bars.csv"
+  awk -F ',' 'BEGIN { OFS=","; print "scenario,memory" }
+    NR == 1 { next }
+    $1 == "loaded" || $1 == "ultra" { printf "%s,%.2f\n", $1, $4+0 }
+  ' "$RUN_DIR/summary.csv" > "$LOADED_SUMMARY"
+
+  gnuplot 2>"$CHARTS/gnuplot-loaded.err" <<GNUPLOT
+set datafile separator comma
+set terminal svg size 1400,900 dynamic enhanced font 'Sans,14'
+set border linewidth 1.2
+set grid ytics xtics lt 0 lc rgb '#CCCCCC'
+set key bottom center horizontal outside samplen 2 spacing 1.2 font 'Sans,13'
+set tics font 'Sans,12'
+set xlabel font 'Sans,13'
+set ylabel font 'Sans,13'
+set title font 'Sans,16'
+set lmargin 12
+set rmargin 6
+set tmargin 3
+set bmargin 6
+set style line 2 lc rgb '#D55E00' lw 2.8 lt 1
+set style line 4 lc rgb '#CC79A7' lw 2.8 lt 1
+set style line 10 lc rgb '#6B5B95' lw 1
+set style line 12 lc rgb '#CC79A7' lw 1
+
+set output '${CHARTS}/memory-loaded.svg'
+set title 'LiteWeb memory — same 3 pages loaded (Normal vs Ultra)'
+set xlabel 'Elapsed time (seconds)'
+set ylabel 'Memory (MiB)'
+set xrange [0:${LX_MAX}]
+set yrange [0:${LMEM_MAX}]
+plot \
+  '${FILTERED}/samples-loaded.csv' every ::1 using 2:(\$5/1048576) with lines ls 2 title 'Loaded (Normal engine)', \
+  '${FILTERED}/samples-ultra.csv' every ::1 using 2:(\$5/1048576) with lines ls 4 title 'Ultra (stripped engine)'
+set output
+
+set output '${CHARTS}/cpu-loaded.svg'
+set title 'LiteWeb CPU — same 3 pages loaded (log scale)'
+set xlabel 'Elapsed time (seconds)'
+set ylabel 'CPU (%)  [log scale]'
+set xrange [0:${LX_MAX}]
+set logscale y
+set yrange [0.01:${LCPU_MAX}]
+set format y '%g'
+set ytics (0.01, 0.1, 0.5, 1, 5, 10, 50, 100, 500)
+plot \
+  '${FILTERED}/samples-loaded-log.csv' every ::1 using 2:7 with lines ls 2 title 'Loaded (Normal engine)', \
+  '${FILTERED}/samples-ultra-log.csv' every ::1 using 2:7 with lines ls 4 title 'Ultra (stripped engine)'
+set output
+unset logscale y
+set format y '%g'
+
+set terminal svg size 1200,800 dynamic enhanced font 'Sans,14'
+set output '${CHARTS}/memory-loaded-summary.svg'
+unset logscale
+set format x '%g'
+set format y '%g'
+set ytics auto
+set xtics auto
+set title 'Cruise memory with 3 pages still loaded' font 'Sans,16'
+set xlabel ''
+set ylabel 'Memory (MiB)'
+set style data histograms
+set style histogram clustered gap 1
+set style fill solid 0.85 border lc rgb '#333333'
+set boxwidth 0.85 relative
+set key off
+set xtics font 'Sans,14'
+set yrange [0:*]
+set xrange [*:*]
+set grid ytics lt 0 lc rgb '#CCCCCC'
+set grid noxtics
+set bmargin 6
+set lmargin 12
+set tmargin 3
+set rmargin 4
+plot \
+  '${LOADED_SUMMARY}' every ::1 using 2:xtic(1) with histogram ls 12 title 'Cruise RAM', \
+  '' every ::1 using (\$0):(\$2):(sprintf('%.0f', \$2)) with labels offset 0,0.7 font 'Sans,11' notitle
+set output
+GNUPLOT
+
+  if [[ ! -s "$CHARTS/memory-loaded.svg" || ! -s "$CHARTS/cpu-loaded.svg" || ! -s "$CHARTS/memory-loaded-summary.svg" ]]; then
+    echo "gnuplot failed to create loaded/ultra charts:" >&2
+    cat "$CHARTS/gnuplot-loaded.err" >&2 || true
+    exit 1
+  fi
+  rm -f "$CHARTS/gnuplot-loaded.err"
+fi
+
 echo "Charts created in: $CHARTS"
 echo "  memory-over-time.svg  (markers = suspension times)"
 echo "  cpu-over-time.svg     (log Y + suspension markers)"
 echo "  memory-summary.svg"
+if [[ -s "$CHARTS/memory-loaded.svg" ]]; then
+  echo "  memory-loaded.svg / cpu-loaded.svg / memory-loaded-summary.svg"
+fi
 echo "  scales: x<=${X_MAX}s  mem<=${MEM_MAX} MiB  cpu_log<=${CPU_MAX}%"
 if [[ -s "$MARKERS" ]]; then
   echo "  suspension markers:"

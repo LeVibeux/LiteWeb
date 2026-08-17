@@ -89,7 +89,10 @@ Les onglets suspendus libèrent leur WebView, ce qui réduit fortement l'usage d
 
 ### Exemple de résultats (run local, 2026-08-11)
 
-CPU/RAM du cgroup LiteWeb + enfants WebKit. Charge : 10 pages publiques fixes + 1 onglet blank sentinelle (sauf idle = 1 onglet Google).
+CPU/RAM du cgroup LiteWeb + enfants WebKit.
+
+- Suite suspension : 10 pages publiques fixes + 1 onglet blank sentinelle (idle = 1 onglet Google).
+- Suite moteur (`loaded` vs `ultra`) : les 3 mêmes pages restent chargées (Wikipedia, rust-lang, HN).
 
 | Scénario | Tous les onglets suspendus | RAM avant → après | RAM économisée | CPU après |
 |----------|---------------------------:|------------------:|---------------:|----------:|
@@ -112,7 +115,7 @@ CPU/RAM du cgroup LiteWeb + enfants WebKit. Charge : 10 pages publiques fixes + 
 - Le gain principal est la **RAM** : un onglet suspendu libère sa WebView ; seul l’onglet blank actif garde un moteur vivant. D’où une RAM « après » parfois *inférieure* au baseline idle (Google encore chargé).
 - **Normal** attend les 10 min d’inactivité, puis suspend les 10 pages d’un coup → plus grosse chute de mémoire, la plus « propre ».
 - **Agressif** commence par la limite d’onglets actifs (~30 s, 6 onglets), puis le timeout 1 min (~60 s, 10/10) → même type d’économie, beaucoup plus tôt.
-- **Ultra** vise la RAM *pendant que les pages sont encore chargées* (pas de tas JS, pas d’images décodées). Relancer le banc pour remplir une ligne Ultra ; la RAM après suspension n’est pas l’argument propre à Ultra.
+- **Ultra** se compare à **loaded**, pas à la RAM après suspension : les 3 mêmes pages restent vivantes, Ultra ne fait que dépouiller le moteur (plus de JS/images/médias, article aplati). Relancer le banc pour remplir cette paire ; les graphes de suspension à 10 onglets restent Normal/Agressif.
 - Le **CPU** reste bas une fois suspendu ; les pics de chargement ne comptent pas dans la fenêtre « après ». Le banc mesure CPU/RAM cgroup, pas les watts à la prise, et n’attribue pas l’économie CPU à un throttling JavaScript.
 - Les chiffres dépendent de la machine et du poids réel des pages ; relancer localement pour ton matériel.
 
@@ -123,7 +126,7 @@ CPU/RAM du cgroup LiteWeb + enfants WebKit. Charge : 10 pages publiques fixes + 
 ./scripts/visualize_benchmark.sh benchmark-results/run-YYYYMMDD-HHMMSS   # nécessite gnuplot
 ```
 
-~20 min, session graphique, profil frais par scénario. Sorties CSV + `summary.md` sous `benchmark-results/`. Pour comparer : secteur, luminosité fixe, pas d’autres navigateurs lourds.
+~22 min, session graphique, profil frais par scénario. Sorties CSV + `summary.md` sous `benchmark-results/`. Pour comparer : secteur, luminosité fixe, pas d’autres navigateurs lourds.
 
 ## Architecture
 

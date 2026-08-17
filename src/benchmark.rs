@@ -100,11 +100,9 @@ impl BenchmarkConfig {
             return Ok(None);
         };
 
-        let scenario_value = args
-            .get(position + 1)
-            .ok_or_else(|| {
-                "--benchmark requires idle, normal, aggressive, loaded, or ultra".to_string()
-            })?;
+        let scenario_value = args.get(position + 1).ok_or_else(|| {
+            "--benchmark requires idle, normal, aggressive, loaded, or ultra".to_string()
+        })?;
         let scenario = BenchmarkScenario::parse(scenario_value).ok_or_else(|| {
             format!(
                 "unknown benchmark scenario '{scenario_value}'; expected idle, normal, aggressive, loaded, or ultra"
@@ -248,10 +246,7 @@ mod tests {
         };
         assert_eq!(loaded.initial_urls(), ultra.initial_urls());
         assert_eq!(loaded.initial_urls().len(), LOADED_BENCHMARK_URLS.len());
-        assert!(!loaded
-            .initial_urls()
-            .iter()
-            .any(|url| url == "about:blank"));
+        assert!(!loaded.initial_urls().iter().any(|url| url == "about:blank"));
         assert!(!loaded.scenario.uses_suspension());
         assert!(!ultra.scenario.uses_suspension());
         assert_eq!(loaded.scenario.expected_suspended_tabs(), 0);

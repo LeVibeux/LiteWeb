@@ -2,9 +2,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gio::Cancellable;
 use gdk_pixbuf::prelude::*;
 use gdk_pixbuf::{InterpType, Pixbuf, PixbufLoader};
+use gio::Cancellable;
 use gtk::prelude::*;
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, Entry, Image, Inhibit, Label,
@@ -137,7 +137,8 @@ impl BrowserWindow {
             match config.scenario {
                 BenchmarkScenario::Aggressive => energy.set_level(EnergyLevel::Aggressive),
                 BenchmarkScenario::Ultra => energy.set_level(EnergyLevel::Ultra),
-                BenchmarkScenario::Idle | BenchmarkScenario::Normal | BenchmarkScenario::Loaded => {}
+                BenchmarkScenario::Idle | BenchmarkScenario::Normal | BenchmarkScenario::Loaded => {
+                }
             }
         }
         set_archaic_stylesheet(
@@ -212,7 +213,9 @@ impl BrowserWindow {
         bookmark.set_tooltip_text(Some("Ajouter aux favoris (Ctrl+D)"));
 
         let eco = Button::with_label("⚡");
-        eco.set_tooltip_text(Some("Mode économie : Normal → Éco → Agressif → Ultra (Ctrl+Shift+E)"));
+        eco.set_tooltip_text(Some(
+            "Mode économie : Normal → Éco → Agressif → Ultra (Ctrl+Shift+E)",
+        ));
 
         let eco_label = Label::new(Some("Mode: Normal"));
         let block_label = Label::new(Some("Bloqués: 0"));
@@ -706,12 +709,8 @@ impl BrowserWindow {
                     page_box.pack_start(&info, true, true, 0);
                 } else {
                     if tab.webview.is_none() {
-                        let wv = create_webview(
-                            &web_context,
-                            blocker.clone(),
-                            &user_content,
-                            policy,
-                        );
+                        let wv =
+                            create_webview(&web_context, blocker.clone(), &user_content, policy);
                         Self::connect_webview(
                             wv.clone(),
                             tab.id,

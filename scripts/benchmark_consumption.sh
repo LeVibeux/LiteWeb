@@ -18,14 +18,19 @@ BENCHMARK_URLS=(
   "https://news.ycombinator.com/"
   "https://www.reddit.com/"
 )
+LOADED_BENCHMARK_URLS=(
+  "https://fr.wikipedia.org/wiki/Navigateur_web"
+  "https://www.rust-lang.org/fr/"
+  "https://news.ycombinator.com/"
+)
 
 usage() {
   cat <<'EOF'
 Usage: ./scripts/benchmark_consumption.sh [--output DIRECTORY]
 
-Runs the idle, normal, aggressive, and ultra LiteWeb consumption scenarios.
-Results are written to benchmark-results/ by default. The full run takes about
-20 min.
+Runs the idle, normal, aggressive, loaded, and ultra LiteWeb consumption
+scenarios. Results are written to benchmark-results/ by default. The full run
+takes about 22 min.
 EOF
 }
 
@@ -60,6 +65,10 @@ cp -- "$0" "$OUTPUT_DIR/benchmark_consumption.sh"
 printf 'index,url\n' > "$OUTPUT_DIR/urls.csv"
 for index in "${!BENCHMARK_URLS[@]}"; do
   printf '%s,%s\n' "$((index + 1))" "${BENCHMARK_URLS[$index]}" >> "$OUTPUT_DIR/urls.csv"
+done
+printf 'index,url\n' > "$OUTPUT_DIR/urls-loaded.csv"
+for index in "${!LOADED_BENCHMARK_URLS[@]}"; do
+  printf '%s,%s\n' "$((index + 1))" "${LOADED_BENCHMARK_URLS[$index]}" >> "$OUTPUT_DIR/urls-loaded.csv"
 done
 printf 'key,value\n' > "$OUTPUT_DIR/metadata.csv"
 printf 'generated_at,%s\n' "$(date -Is)" >> "$OUTPUT_DIR/metadata.csv"
@@ -123,15 +132,12 @@ run_scenario() {
   current_unit="$unit"
   current_runtime="$runtime"
 
-  # Hard cap so a stuck suspension policy cannot hang the whole suite.
-  # idle: ~150s; normal: 600s timeout + margins; aggressive: 60s + margins;
-  # ultra: 15s policy, first energy tick at 30s + margins.
+  # idle/loaded/ultra: ~150s; normal: 600s timeout + margins; aggressive: 60s + margins.
   local max_seconds=240
   case "$scenario" in
-    idle) max_seconds=240 ;;
+    idle|loaded|ultra) max_seconds=240 ;;
     normal) max_seconds=900 ;;
     aggressive) max_seconds=420 ;;
-    ultra) max_seconds=240 ;;
   esac
 
   printf 'wall_time_ms,elapsed_s,active_state,cpu_usage_ns,memory_current_bytes,memory_peak_bytes,cpu_percent\n' > "$samples"
@@ -223,7 +229,7 @@ run_scenario() {
     echo "The $scenario scenario did not complete its warmup." >&2
     return 1
   fi
-  if [[ "$scenario" != "idle" && ( -z "$first_ms" || -z "$all_ms" ) ]]; then
+  if [[ "$scenario" == "normal" || "$scenario" == "aggressive" ]] && [[ -z "$first_ms" || -z "$all_ms" ]]; then
     echo "The $scenario scenario did not report all suspension milestones." >&2
     cat "$events" >&2 || true
     return 1
@@ -231,7 +237,7 @@ run_scenario() {
   before_start="$warmup_ms"
   before_end="$completed_ms"
   after_start="$warmup_ms"
-  if [[ "$scenario" != "idle" ]]; then
+  if [[ "$scenario" == "normal" || "$scenario" == "aggressive" ]]; then
     before_start=$((first_ms - 30000))
     before_end="$first_ms"
     after_start="$all_ms"
@@ -263,6 +269,7 @@ run_scenario() {
 run_scenario idle
 run_scenario normal
 run_scenario aggressive
+run_scenario loaded
 run_scenario ultra
 
 cat >> "$OUTPUT_DIR/summary.md" <<'EOF'
@@ -272,10 +279,12 @@ cat >> "$OUTPUT_DIR/summary.md" <<'EOF'
 - One fresh LiteWeb profile per scenario; CPU and memory are collected from its
   user cgroup, including WebKit subprocesses.
 - `idle`: Google homepage only, after a 30-second warmup.
-- `normal`, `aggressive`, and `ultra`: ten fixed public pages plus one active
-  blank sentinel tab, so all ten measured pages can become inactive.
-- `ultra` also disables JavaScript, images, media and GPU, then flattens each
-  page to a reader document. Its interesting number is RAM before suspend.
+- `normal` and `aggressive`: ten fixed public pages plus one active blank
+  sentinel tab, so all ten measured pages can become inactive.
+- `loaded` and `ultra`: the same three public pages (Wikipedia, rust-lang, HN)
+  kept alive for 120 s after warmup. `ultra` disables JavaScript, images, media
+  and GPU, then flattens each page to a reader document. Compare RAM while the
+  WebViews are still loaded; do not treat after-suspend RAM as Ultra’s claim.
 - Results are most useful when the computer is plugged in, brightness is fixed,
   and no other browser or heavy process is running.
 
