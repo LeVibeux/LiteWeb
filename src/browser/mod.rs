@@ -8,5 +8,5 @@ pub use tab::{Tab, TabState};
 pub use tab_manager::TabManager;
 pub use webview::{
     apply_webview_policy, create_user_content_manager, create_web_context, create_webview,
-    set_archaic_stylesheet,
+    sandbox_runtime_available, set_archaic_stylesheet, NewTabHandler,
 };

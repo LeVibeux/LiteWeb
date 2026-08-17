@@ -101,14 +101,55 @@ pub(crate) fn is_safe_navigation_url(input: &str) -> bool {
     if input == "about:blank" {
         return true;
     }
+    if input.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return false;
+    }
 
     let Ok(parsed) = url::Url::parse(input) else {
         return false;
     };
     matches!(parsed.scheme(), "http" | "https")
-        && parsed.host_str().is_some()
         && parsed.username().is_empty()
         && parsed.password().is_none()
+        && !parsed.cannot_be_a_base()
+        && parsed.host_str().is_some_and(is_usable_http_host)
+}
+
+fn is_usable_http_host(host: &str) -> bool {
+    let host = host.trim_matches(|c| c == '[' || c == ']');
+    !host.is_empty() && !host.bytes().all(|b| b == b'.')
+}
+
+pub(crate) fn should_allow_navigation(
+    uri: Option<&str>,
+    is_blocked: impl Fn(&str) -> bool,
+) -> bool {
+    match uri {
+        Some(uri) if is_safe_navigation_url(uri) && !is_blocked(uri) => true,
+        _ => false,
+    }
+}
+
+pub(crate) fn is_bidi_control(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
+pub(crate) fn sanitize_ui_text(input: &str) -> String {
+    input.chars().filter(|ch| !is_bidi_control(*ch)).collect()
+}
+
+pub(crate) fn display_navigation_url(input: &str) -> String {
+    let cleaned = sanitize_ui_text(input);
+    if cleaned == "about:blank" {
+        return cleaned;
+    }
+    match url::Url::parse(&cleaned) {
+        Ok(parsed) => parsed.to_string(),
+        Err(_) => cleaned,
+    }
 }
 
 #[cfg(test)]
@@ -207,5 +248,75 @@ mod tests {
         assert!(!is_safe_navigation_url("data:text/html,hello"));
         assert!(!is_safe_navigation_url("about:config"));
         assert!(!is_safe_navigation_url("https://user:secret@example.com"));
+    }
+
+    #[test]
+    fn navigation_allowlist_rejects_dot_only_hosts_and_non_web_schemes() {
+        assert!(!is_safe_navigation_url("http://."));
+        assert!(!is_safe_navigation_url("http://.."));
+        assert!(!is_safe_navigation_url("https://."));
+        assert!(!is_safe_navigation_url("ws://example.com"));
+        assert!(!is_safe_navigation_url("wss://example.com"));
+        assert!(!is_safe_navigation_url("ftp://ftp.example.com"));
+        assert!(!is_safe_navigation_url("blob:https://example.com/uuid"));
+        assert!(!is_safe_navigation_url("view-source:https://example.com"));
+        assert!(!is_safe_navigation_url(
+            "javascript://https://example.com/%0aalert(1)"
+        ));
+        assert!(!is_safe_navigation_url(
+            "intent://scan/#Intent;scheme=http;end"
+        ));
+        assert!(!is_safe_navigation_url("https://user@example.com"));
+        assert!(!is_safe_navigation_url("https://example.com@evil.com"));
+    }
+
+    #[test]
+    fn navigation_policy_fails_closed_without_a_uri() {
+        assert!(!should_allow_navigation(None, |_| false));
+        assert!(!should_allow_navigation(
+            Some("https://ads.example"),
+            |_| { true }
+        ));
+        assert!(should_allow_navigation(Some("https://example.com"), |_| {
+            false
+        }));
+        assert!(!should_allow_navigation(
+            Some("javascript:alert(1)"),
+            |_| false
+        ));
+    }
+
+    #[test]
+    fn display_url_uses_punycode_for_idn_hosts() {
+        let unicode = "https://аpple.com/login";
+        let shown = display_navigation_url(unicode);
+        assert!(
+            shown.contains("xn--"),
+            "IDN hosts must be shown as punycode, got {shown}"
+        );
+        assert!(
+            !shown.contains('а'),
+            "Cyrillic lookalike must not stay in the address bar, got {shown}"
+        );
+    }
+
+    #[test]
+    fn display_url_strips_bidi_overrides() {
+        let spoofed = format!("https://example.com/{}\u{202E}moc.evil", "docs/");
+        let shown = display_navigation_url(&spoofed);
+        assert!(
+            !shown.chars().any(is_bidi_control),
+            "bidi overrides must not reach the address bar, got {shown:?}"
+        );
+        assert!(shown.contains("example.com"));
+    }
+
+    #[test]
+    fn ui_text_strips_bidi_overrides_from_page_titles() {
+        let title = format!("Banque {}\u{202E}evil", "Nationale");
+        let shown = sanitize_ui_text(&title);
+        assert!(!shown.chars().any(is_bidi_control));
+        assert!(shown.contains("Banque"));
+        assert!(shown.contains("evil"));
     }
 }

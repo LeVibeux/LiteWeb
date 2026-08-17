@@ -5,13 +5,33 @@ pub const ULTRA_BANNER_FR: &str =
 
 const DROP_TAGS: &[&str] = &[
     "script", "style", "iframe", "img", "picture", "source", "nav", "header", "footer", "aside",
-    "video", "audio", "canvas", "svg", "noscript", "form", "button", "input",
+    "video", "audio", "canvas", "svg", "noscript", "form", "button", "input", "object", "embed",
+    "applet", "link", "meta", "base", "frame", "frameset", "template", "math", "textarea",
+    "select",
 ];
 
 const KEEP_TAGS: &[&str] = &[
-    "h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "li", "blockquote", "pre", "code", "a",
-    "em", "strong", "br",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "p",
+    "ul",
+    "ol",
+    "li",
+    "blockquote",
+    "pre",
+    "code",
+    "a",
+    "em",
+    "strong",
+    "br",
 ];
+
+const READER_CSP: &str =
+    "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
 
 const READER_CSS: &str = r#"
 html, body { background: #f4f1e8; color: #1a1a1a; overflow-y: auto; height: auto; }
@@ -29,7 +49,8 @@ pub fn flatten_html(html: &str, page_url: &str) -> String {
         .unwrap_or_default();
 
     format!(
-        "<!DOCTYPE html>\n<html lang=\"fr\">\n<head>\n<meta charset=\"utf-8\">\n<title>{title}</title>\n<style>{css}</style>\n</head>\n<body>\n<p class=\"liteweb-ultra-banner\">{banner}</p>\n<article>\n{body}\n</article>\n</body>\n</html>",
+        "<!DOCTYPE html>\n<html lang=\"fr\">\n<head>\n<meta charset=\"utf-8\">\n<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">\n<title>{title}</title>\n<style>{css}</style>\n</head>\n<body>\n<p class=\"liteweb-ultra-banner\">{banner}</p>\n<article>\n{body}\n</article>\n</body>\n</html>",
+        csp = READER_CSP,
         title = escape_text(&title),
         css = READER_CSS,
         banner = escape_text(ULTRA_BANNER_FR),
@@ -114,8 +135,7 @@ fn resolve_href(href: Option<&str>, page_url: &str) -> Option<String> {
         return None;
     }
     let resolved = url::Url::parse(page_url).ok()?.join(href).ok()?;
-    matches!(resolved.scheme(), "http" | "https")
-        .then(|| resolved.to_string())
+    matches!(resolved.scheme(), "http" | "https").then(|| resolved.to_string())
 }
 
 fn escape_text(input: &str) -> String {
@@ -189,5 +209,49 @@ mod tests {
             out.contains("overflow-y: auto") || out.contains("overflow-y:scroll"),
             "flattened Ultra pages must be explicitly scrollable, got: {out}"
         );
+    }
+
+    #[test]
+    fn reader_document_ships_a_strict_csp() {
+        let out = flatten_html(ARTICLE, "https://example.com/news");
+        assert!(
+            out.contains("Content-Security-Policy"),
+            "reader HTML must declare a CSP, got: {out}"
+        );
+        assert!(
+            out.contains("default-src 'none'"),
+            "reader CSP must deny implicit resource loads, got: {out}"
+        );
+        assert!(
+            out.contains("script-src 'none'"),
+            "reader CSP must forbid scripts, got: {out}"
+        );
+    }
+
+    #[test]
+    fn reader_strips_active_and_embedding_markup() {
+        let dirty = r#"<html><body><article>
+            <p>ok</p>
+            <a href="javascript:alert(1)">xss</a>
+            <a href="data:text/html,<script>alert(1)</script>">data</a>
+            <a href="JaVaScRiPt:alert(1)">js2</a>
+            <object data="https://evil.example/x"></object>
+            <embed src="https://evil.example/x">
+            <base href="https://evil.example/">
+            <meta http-equiv="refresh" content="0;url=https://evil.example/">
+            <template><script>alert(1)</script><p>leaked</p></template>
+          </article></body></html>"#;
+        let out = flatten_html(dirty, "https://example.com/news");
+        let low = out.to_ascii_lowercase();
+        assert!(out.contains("ok"));
+        assert!(!low.contains("javascript:"));
+        assert!(!low.contains("data:text/html"));
+        assert!(!low.contains("<object"));
+        assert!(!low.contains("<embed"));
+        assert!(!low.contains("<base"));
+        assert!(!low.contains("refresh"));
+        assert!(!low.contains("<template"));
+        assert!(!low.contains("alert(1)"));
+        assert!(!low.contains("leaked"));
     }
 }

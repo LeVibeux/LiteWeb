@@ -28,9 +28,11 @@ use crate::benchmark::{
 };
 use crate::browser::{
     apply_webview_policy, create_user_content_manager, create_web_context, create_webview,
-    flatten_html, set_archaic_stylesheet, TabManager,
+    flatten_html, sandbox_runtime_available, set_archaic_stylesheet, NewTabHandler, TabManager,
 };
-use crate::commands::{is_safe_navigation_url, CommandAction, CommandPalette};
+use crate::commands::{
+    display_navigation_url, is_safe_navigation_url, sanitize_ui_text, CommandAction, CommandPalette,
+};
 use crate::energy::{EnergyLevel, EnergyManager};
 use crate::storage::Storage;
 
@@ -175,6 +177,7 @@ impl BrowserWindow {
         Self::wire_notebook(&notebook, state.clone());
         Self::render_tabs(state.clone(), true);
         Self::activate_benchmark_sentinel(state.clone());
+        Self::warn_if_sandbox_unavailable(state.clone());
         Self::start_energy_timer(state.clone());
         Self::start_benchmark_timer(state.clone(), app.clone());
 
@@ -561,7 +564,10 @@ impl BrowserWindow {
                     }
                     Self::render_tabs(state.clone(), true);
                 } else if let Some(tab) = state.borrow().tabs.active_tab() {
-                    state.borrow().url_entry.set_text(&tab.url);
+                    state
+                        .borrow()
+                        .url_entry
+                        .set_text(&display_navigation_url(&tab.url));
                 }
             });
         });
@@ -587,7 +593,7 @@ impl BrowserWindow {
     fn update_chrome(state: Rc<RefCell<AppState>>) {
         let st = state.borrow();
         if let Some(tab) = st.tabs.active_tab() {
-            st.url_entry.set_text(&tab.url);
+            st.url_entry.set_text(&display_navigation_url(&tab.url));
         }
         st.eco_label
             .set_text(&format!("Mode: {}", st.energy.level().label()));
@@ -663,12 +669,19 @@ impl BrowserWindow {
             let policy = st.energy.level().webview_policy();
             let storage = st.storage.clone();
             let state_for_tabs = state.clone();
+            let on_new_tab = Self::new_tab_handler(state.clone());
 
             for tab in st.tabs.tabs_mut().iter_mut() {
                 if tab.is_suspended() || tab.webview.is_some() {
                     continue;
                 }
-                let wv = create_webview(&web_context, blocker.clone(), &user_content, policy);
+                let wv = create_webview(
+                    &web_context,
+                    blocker.clone(),
+                    &user_content,
+                    policy,
+                    on_new_tab.clone(),
+                );
                 Self::connect_webview(wv.clone(), tab.id, state_for_tabs.clone(), storage.clone());
                 tab.webview = Some(wv);
             }
@@ -688,6 +701,7 @@ impl BrowserWindow {
             let policy = st.energy.level().webview_policy();
             let storage = st.storage.clone();
             let state_for_tabs = state.clone();
+            let on_new_tab = Self::new_tab_handler(state.clone());
 
             while (st.notebook.n_pages() as usize) < tab_count {
                 let index = st.notebook.n_pages() as usize;
@@ -703,14 +717,19 @@ impl BrowserWindow {
                 if tab.is_suspended() {
                     let info = Label::new(Some(&format!(
                         "Onglet suspendu — {}\nAppuyez pour réactiver",
-                        tab.url
+                        display_navigation_url(&tab.url)
                     )));
                     info.set_margin_top(24);
                     page_box.pack_start(&info, true, true, 0);
                 } else {
                     if tab.webview.is_none() {
-                        let wv =
-                            create_webview(&web_context, blocker.clone(), &user_content, policy);
+                        let wv = create_webview(
+                            &web_context,
+                            blocker.clone(),
+                            &user_content,
+                            policy,
+                            on_new_tab.clone(),
+                        );
                         Self::connect_webview(
                             wv.clone(),
                             tab.id,
@@ -753,7 +772,7 @@ impl BrowserWindow {
             let url_text = st
                 .tabs
                 .active_tab()
-                .map(|t| t.url.clone())
+                .map(|t| display_navigation_url(&t.url))
                 .unwrap_or_default();
             let eco_text = format!("Mode: {}", st.energy.level().label());
             let block_text = format!("Bloqués: {}", st.blocker.blocked_count());
@@ -789,7 +808,7 @@ impl BrowserWindow {
                     let mut st = state_title.borrow_mut();
                     if let Some(tab_index) = st.tabs.index_of_id(tab_id) {
                         let tab = &mut st.tabs.tabs_mut()[tab_index];
-                        tab.title = title.to_string();
+                        tab.title = sanitize_ui_text(&title);
                     }
                 }
                 let tab_index = { state_title.borrow().tabs.index_of_id(tab_id) };
@@ -799,8 +818,29 @@ impl BrowserWindow {
             }
         });
 
-        let state_load = state.clone();
+        let state_committed = state.clone();
+        let state_finished = state.clone();
         wv.connect_load_changed(move |view, event| {
+            if matches!(event, LoadEvent::Committed | LoadEvent::Redirected) {
+                if let Some(uri) = view.uri() {
+                    if !is_safe_navigation_url(&uri) {
+                        view.stop_loading();
+                        view.load_uri("about:blank");
+                        return;
+                    }
+                    let state_committed = state_committed.clone();
+                    glib::idle_add_local_once(move || {
+                        let mut st = state_committed.borrow_mut();
+                        if let Some(tab_index) = st.tabs.index_of_id(tab_id) {
+                            st.tabs.tabs_mut()[tab_index].url = uri.to_string();
+                        }
+                        if st.tabs.active_tab().map(|tab| tab.id) == Some(tab_id) {
+                            st.url_entry.set_text(&display_navigation_url(&uri));
+                        }
+                    });
+                }
+                return;
+            }
             if event != LoadEvent::Finished {
                 return;
             }
@@ -808,7 +848,7 @@ impl BrowserWindow {
             let title = view.title();
             let view = view.clone();
             let storage = storage.clone();
-            let state_load = state_load.clone();
+            let state_load = state_finished.clone();
             glib::idle_add_local_once(move || {
                 let Some(uri) = uri else {
                     return;
@@ -816,18 +856,18 @@ impl BrowserWindow {
                 if !is_safe_navigation_url(&uri) {
                     return;
                 }
-                let title = title.unwrap_or_else(|| uri.clone());
+                let title = sanitize_ui_text(&title.unwrap_or_else(|| uri.clone()));
                 storage.add_history(&uri, &title);
                 let flatten = {
                     let mut st = state_load.borrow_mut();
                     if let Some(tab_index) = st.tabs.index_of_id(tab_id) {
                         let tab = &mut st.tabs.tabs_mut()[tab_index];
                         tab.url = uri.to_string();
-                        tab.title = title.to_string();
+                        tab.title = title.clone();
                         tab.modified = false;
                     }
                     if st.tabs.active_tab().map(|tab| tab.id) == Some(tab_id) {
-                        st.url_entry.set_text(&uri);
+                        st.url_entry.set_text(&display_navigation_url(&uri));
                     }
                     st.block_label
                         .set_text(&format!("Bloqués: {}", st.blocker.blocked_count()));
@@ -878,7 +918,7 @@ impl BrowserWindow {
                 wv.load_uri(&url);
             }
         }
-        st.url_entry.set_text(&url);
+        st.url_entry.set_text(&display_navigation_url(&url));
     }
 
     fn navigate_back(state: Rc<RefCell<AppState>>) {
@@ -921,6 +961,26 @@ impl BrowserWindow {
         }
     }
 
+    fn new_tab_handler(state: Rc<RefCell<AppState>>) -> NewTabHandler {
+        Rc::new(move |url: String| {
+            let state = state.clone();
+            glib::idle_add_local_once(move || {
+                Self::new_tab(state, &url);
+            });
+        })
+    }
+
+    fn warn_if_sandbox_unavailable(state: Rc<RefCell<AppState>>) {
+        if sandbox_runtime_available() {
+            return;
+        }
+        eprintln!("LiteWeb: sandbox WebKit incomplète (bwrap introuvable). Installez bubblewrap.");
+        Self::set_hints(
+            state,
+            "⚠ sandbox inactive — installez bubblewrap (bwrap) pour isoler les pages",
+        );
+    }
+
     fn new_tab(state: Rc<RefCell<AppState>>, url: &str) {
         if !is_safe_navigation_url(url) {
             Self::show_message(
@@ -947,7 +1007,9 @@ impl BrowserWindow {
     fn bookmark_current(state: Rc<RefCell<AppState>>) {
         let st = state.borrow();
         if let Some(tab) = st.tabs.active_tab() {
-            st.storage.add_bookmark(&tab.url, &tab.title);
+            if is_safe_navigation_url(&tab.url) {
+                st.storage.add_bookmark(&tab.url, &tab.title);
+            }
         }
     }
 
@@ -1127,7 +1189,13 @@ impl BrowserWindow {
         } else {
             bookmarks
                 .iter()
-                .map(|b| format!("• {} — {}", b.title, b.url))
+                .map(|b| {
+                    format!(
+                        "• {} — {}",
+                        sanitize_ui_text(&b.title),
+                        display_navigation_url(&b.url)
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         };
@@ -1141,7 +1209,13 @@ impl BrowserWindow {
         } else {
             entries
                 .iter()
-                .map(|e| format!("• {} — {}", e.title, e.url))
+                .map(|e| {
+                    format!(
+                        "• {} — {}",
+                        sanitize_ui_text(&e.title),
+                        display_navigation_url(&e.url)
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         };
@@ -1327,9 +1401,10 @@ impl BrowserWindow {
 }
 
 fn truncate_title(title: &str) -> String {
+    let title = sanitize_ui_text(title);
     if title.chars().count() > 24 {
         format!("{}…", title.chars().take(22).collect::<String>())
     } else {
-        title.to_string()
+        title
     }
 }
