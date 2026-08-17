@@ -5,6 +5,24 @@ pub enum EnergyLevel {
     Normal,
     Eco,
     Aggressive,
+    Ultra,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebViewPolicy {
+    pub javascript: bool,
+    pub javascript_markup: bool,
+    pub auto_load_images: bool,
+    pub media: bool,
+    pub webaudio: bool,
+    pub webgl: bool,
+    pub webrtc: bool,
+    pub html5_local_storage: bool,
+    pub html5_database: bool,
+    pub hardware_acceleration: bool,
+    pub smooth_scrolling: bool,
+    pub archaic_stylesheet: bool,
+    pub flatten_document: bool,
 }
 
 impl EnergyLevel {
@@ -12,7 +30,8 @@ impl EnergyLevel {
         match self {
             Self::Normal => Self::Eco,
             Self::Eco => Self::Aggressive,
-            Self::Aggressive => Self::Normal,
+            Self::Aggressive => Self::Ultra,
+            Self::Ultra => Self::Normal,
         }
     }
 
@@ -21,6 +40,7 @@ impl EnergyLevel {
             Self::Normal => "Normal",
             Self::Eco => "Éco",
             Self::Aggressive => "Agressif",
+            Self::Ultra => "Ultra",
         }
     }
 
@@ -29,6 +49,7 @@ impl EnergyLevel {
             Self::Normal => Duration::from_secs(600),
             Self::Eco => Duration::from_secs(180),
             Self::Aggressive => Duration::from_secs(60),
+            Self::Ultra => Duration::from_secs(15),
         }
     }
 
@@ -37,6 +58,26 @@ impl EnergyLevel {
             Self::Normal => 20,
             Self::Eco => 10,
             Self::Aggressive => 5,
+            Self::Ultra => 1,
+        }
+    }
+
+    pub fn webview_policy(self) -> WebViewPolicy {
+        let nuclear = matches!(self, Self::Ultra);
+        WebViewPolicy {
+            javascript: !nuclear,
+            javascript_markup: !nuclear,
+            auto_load_images: !nuclear,
+            media: !nuclear,
+            webaudio: !nuclear,
+            webgl: !nuclear,
+            webrtc: false,
+            html5_local_storage: !nuclear,
+            html5_database: !nuclear,
+            hardware_acceleration: !nuclear,
+            smooth_scrolling: !nuclear,
+            archaic_stylesheet: nuclear,
+            flatten_document: nuclear,
         }
     }
 
@@ -109,5 +150,54 @@ mod tests {
             level: EnergyLevel::Aggressive,
         };
         assert_eq!(mgr.tabs_to_suspend(8), 3);
+    }
+
+    #[test]
+    fn cycle_includes_ultra() {
+        assert_eq!(EnergyLevel::Aggressive.next(), EnergyLevel::Ultra);
+        assert_eq!(EnergyLevel::Ultra.next(), EnergyLevel::Normal);
+    }
+
+    #[test]
+    fn ultra_is_stricter_than_aggressive() {
+        let ultra = EnergyLevel::Ultra;
+        let agg = EnergyLevel::Aggressive;
+        assert!(ultra.suspend_timeout() < agg.suspend_timeout());
+        assert!(ultra.max_active_tabs() < agg.max_active_tabs());
+        assert_eq!(ultra.max_active_tabs(), 1);
+        assert_eq!(ultra.suspend_timeout(), Duration::from_secs(15));
+    }
+
+    #[test]
+    fn ultra_policy_disables_expensive_engine_features() {
+        let p = EnergyLevel::Ultra.webview_policy();
+        assert!(!p.javascript);
+        assert!(!p.javascript_markup);
+        assert!(!p.auto_load_images);
+        assert!(!p.media);
+        assert!(!p.webaudio);
+        assert!(!p.webgl);
+        assert!(!p.webrtc);
+        assert!(!p.html5_local_storage);
+        assert!(!p.html5_database);
+        assert!(!p.hardware_acceleration);
+        assert!(!p.smooth_scrolling);
+        assert!(p.archaic_stylesheet);
+        assert!(p.flatten_document);
+    }
+
+    #[test]
+    fn normal_policy_keeps_a_usable_engine() {
+        let p = EnergyLevel::Normal.webview_policy();
+        assert!(p.javascript);
+        assert!(p.auto_load_images);
+        assert!(p.hardware_acceleration);
+        assert!(!p.archaic_stylesheet);
+        assert!(!p.flatten_document);
+    }
+
+    #[test]
+    fn ultra_label() {
+        assert_eq!(EnergyLevel::Ultra.label(), "Ultra");
     }
 }
