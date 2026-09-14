@@ -1,8 +1,12 @@
+mod downloads;
 mod reader;
 mod tab;
 mod tab_manager;
 mod webview;
 
+pub use downloads::{
+    default_download_dir, is_forbidden_download_destination, sanitize_download_filename,
+};
 pub use reader::flatten_html;
 pub use tab::{Tab, TabState};
 pub use tab_manager::TabManager;

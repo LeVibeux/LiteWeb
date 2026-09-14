@@ -23,6 +23,19 @@ pub struct TabSnapshot {
     pub scroll_y: i32,
 }
 
+#[derive(Debug, Clone)]
+pub struct DownloadEntry {
+    pub url: String,
+    pub filename: String,
+    pub path: String,
+    pub status: String,
+    pub started_at: DateTime<Utc>,
+}
+
+pub const DOWNLOAD_STATUS_IN_PROGRESS: &str = "in_progress";
+pub const DOWNLOAD_STATUS_COMPLETED: &str = "completed";
+pub const DOWNLOAD_STATUS_FAILED: &str = "failed";
+
 #[derive(Clone)]
 pub struct Storage {
     conn: std::sync::Arc<std::sync::Mutex<Connection>>,
@@ -101,7 +114,16 @@ impl Storage {
                     scroll_x INTEGER NOT NULL DEFAULT 0,
                     scroll_y INTEGER NOT NULL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS downloads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    url TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_history_visited ON history(visited_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_downloads_started ON downloads(started_at DESC);
                 ",
         )?;
         Ok(())
@@ -184,6 +206,59 @@ impl Storage {
         ) {
             eprintln!("LiteWeb: impossible d'enregistrer l'onglet suspendu: {error}");
         }
+    }
+
+    pub fn add_download(&self, url: &str, filename: &str, path: &str) -> Option<i64> {
+        let now = Utc::now().to_rfc3339();
+        let id = {
+            let conn = self.conn();
+            if let Err(error) = conn.execute(
+                "INSERT INTO downloads (url, filename, path, status, started_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![url, filename, path, DOWNLOAD_STATUS_IN_PROGRESS, now],
+            ) {
+                eprintln!("LiteWeb: impossible d'enregistrer le téléchargement: {error}");
+                return None;
+            }
+            conn.last_insert_rowid()
+        };
+        if let Err(error) = self.conn().execute(
+            "DELETE FROM downloads WHERE id NOT IN (SELECT id FROM downloads ORDER BY started_at DESC, id DESC LIMIT 200)",
+            [],
+        ) {
+            eprintln!("LiteWeb: impossible de limiter les téléchargements: {error}");
+        }
+        Some(id)
+    }
+
+    pub fn mark_download(&self, id: i64, status: &str) {
+        if let Err(error) = self.conn().execute(
+            "UPDATE downloads SET status = ?1 WHERE id = ?2",
+            params![status, id],
+        ) {
+            eprintln!("LiteWeb: impossible de mettre à jour le téléchargement: {error}");
+        }
+    }
+
+    pub fn recent_downloads(&self, limit: usize) -> Vec<DownloadEntry> {
+        let conn = self.conn();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT url, filename, path, status, started_at FROM downloads ORDER BY started_at DESC, id DESC LIMIT ?1",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map(params![limit as i64], |row| {
+            let started_at: String = row.get(4)?;
+            Ok(DownloadEntry {
+                url: row.get(0)?,
+                filename: row.get(1)?,
+                path: row.get(2)?,
+                status: row.get(3)?,
+                started_at: started_at.parse().unwrap_or_else(|_| Utc::now()),
+            })
+        }) else {
+            return Vec::new();
+        };
+        rows.filter_map(Result::ok).collect()
     }
 }
 
@@ -327,5 +402,42 @@ mod tests {
         assert!(Storage::open_file(&link).is_err());
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn download_roundtrip_and_status_transitions() {
+        let storage = Storage::open_in_memory().unwrap();
+        let id = storage
+            .add_download("https://example.com/file.pdf", "file.pdf", "/tmp/file.pdf")
+            .unwrap();
+
+        let entries = storage.recent_downloads(5);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].url, "https://example.com/file.pdf");
+        assert_eq!(entries[0].filename, "file.pdf");
+        assert_eq!(entries[0].path, "/tmp/file.pdf");
+        assert_eq!(entries[0].status, DOWNLOAD_STATUS_IN_PROGRESS);
+
+        storage.mark_download(id, DOWNLOAD_STATUS_COMPLETED);
+        assert_eq!(
+            storage.recent_downloads(5)[0].status,
+            DOWNLOAD_STATUS_COMPLETED
+        );
+
+        storage.mark_download(id, DOWNLOAD_STATUS_FAILED);
+        assert_eq!(storage.recent_downloads(5)[0].status, DOWNLOAD_STATUS_FAILED);
+    }
+
+    #[test]
+    fn downloads_are_capped_at_200_rows() {
+        let storage = Storage::open_in_memory().unwrap();
+        for i in 0..205 {
+            let _ = storage.add_download(
+                &format!("https://example.com/file-{i}.bin"),
+                &format!("file-{i}.bin"),
+                "/tmp/f.bin",
+            );
+        }
+        assert_eq!(storage.recent_downloads(500).len(), 200);
     }
 }
