@@ -5,6 +5,7 @@ pub enum CommandAction {
     TabNew(String),
     TabNext,
     TabPrev,
+    TabClose(Option<usize>),
     Suspend,
     SuspendAll,
     EcoOn,
@@ -50,6 +51,16 @@ impl CommandPalette {
                     }
                     "next" => CommandAction::TabNext,
                     "prev" => CommandAction::TabPrev,
+                    "close" => {
+                        let rest: String = words.collect::<Vec<_>>().join(" ");
+                        if rest.is_empty() {
+                            CommandAction::TabClose(None)
+                        } else if let Ok(n) = rest.parse::<usize>() {
+                            CommandAction::TabClose(Some(n.saturating_sub(1)))
+                        } else {
+                            CommandAction::Unknown(cmd.to_string())
+                        }
+                    }
                     _ => {
                         if let Ok(n) = first.parse::<usize>() {
                             CommandAction::Tab(n.saturating_sub(1))
@@ -220,6 +231,38 @@ mod tests {
     fn parses_eco_ultra() {
         assert_eq!(CommandPalette::parse(":eco ultra"), CommandAction::EcoUltra);
         assert_eq!(CommandPalette::parse(":eco u"), CommandAction::EcoUltra);
+    }
+
+    #[test]
+    fn parses_tab_close_active() {
+        assert_eq!(
+            CommandPalette::parse(":tab close"),
+            CommandAction::TabClose(None)
+        );
+    }
+
+    #[test]
+    fn parses_t_close_alias() {
+        assert_eq!(
+            CommandPalette::parse(":t close"),
+            CommandAction::TabClose(None)
+        );
+    }
+
+    #[test]
+    fn parses_tab_close_index_is_one_indexed() {
+        assert_eq!(
+            CommandPalette::parse(":tab close 2"),
+            CommandAction::TabClose(Some(1))
+        );
+    }
+
+    #[test]
+    fn tab_close_junk_is_unknown() {
+        match CommandPalette::parse(":tab close foo") {
+            CommandAction::Unknown(_) => {}
+            other => panic!("expected Unknown, got {other:?}"),
+        }
     }
 
     #[test]

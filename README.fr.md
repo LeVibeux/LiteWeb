@@ -70,6 +70,8 @@ Le filtre intégré agit sur les navigations. Il ne remplace pas un bloqueur com
 ```
 :open example.com
 :tab 2
+:tab new
+:tab close
 :suspend
 :suspend-all
 :eco on|off|aggressive|ultra
