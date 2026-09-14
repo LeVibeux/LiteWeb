@@ -70,6 +70,8 @@ The built-in filter applies to navigations. It is not a complete subresource blo
 ```
 :open example.com
 :tab 2
+:tab new
+:tab close
 :suspend
 :suspend-all
 :eco on|off|aggressive|ultra

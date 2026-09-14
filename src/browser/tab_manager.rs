@@ -37,6 +37,9 @@ impl TabManager {
             self.active = 0;
             return true;
         }
+        if index < self.active {
+            self.active -= 1;
+        }
         if self.active >= self.tabs.len() {
             self.active = self.tabs.len() - 1;
         }
@@ -161,6 +164,78 @@ mod tests {
         assert!(tabs.close_tab(0));
         assert_eq!(tabs.index_of_id(second_id), Some(0));
         assert_eq!(tabs.tabs()[0].url, "https://two.example");
+    }
+
+    #[test]
+    fn closing_a_tab_before_active_keeps_active_tab() {
+        let mut tabs = TabManager::new();
+        tabs.create_tab("https://a.example");
+        tabs.create_tab("https://b.example");
+        tabs.create_tab("https://c.example");
+        tabs.set_active(1);
+
+        assert!(tabs.close_tab(0));
+        assert_eq!(tabs.active_index(), 0);
+        assert_eq!(tabs.active_tab().unwrap().url, "https://b.example");
+    }
+
+    #[test]
+    fn closing_a_tab_after_active_keeps_active_index() {
+        let mut tabs = TabManager::new();
+        tabs.create_tab("https://a.example");
+        tabs.create_tab("https://b.example");
+        tabs.create_tab("https://c.example");
+        tabs.set_active(0);
+
+        assert!(tabs.close_tab(2));
+        assert_eq!(tabs.active_index(), 0);
+        assert_eq!(tabs.active_tab().unwrap().url, "https://a.example");
+    }
+
+    #[test]
+    fn closing_the_active_last_tab_falls_back_to_previous() {
+        let mut tabs = TabManager::new();
+        tabs.create_tab("https://a.example");
+        tabs.create_tab("https://b.example");
+        tabs.create_tab("https://c.example");
+
+        assert!(tabs.close_tab(2));
+        assert_eq!(tabs.active_index(), 1);
+        assert_eq!(tabs.active_tab().unwrap().url, "https://b.example");
+    }
+
+    #[test]
+    fn closing_the_only_tab_empties_the_manager() {
+        let mut tabs = TabManager::new();
+        tabs.create_tab("https://a.example");
+
+        assert!(tabs.close_tab(0));
+        assert!(tabs.tabs().is_empty());
+    }
+
+    #[test]
+    fn close_tab_out_of_bounds_returns_false() {
+        let mut tabs = TabManager::new();
+        tabs.create_tab("https://a.example");
+
+        assert!(!tabs.close_tab(5));
+        assert_eq!(tabs.tabs().len(), 1);
+    }
+
+    #[test]
+    fn closing_a_suspended_tab_keeps_other_suspended_tabs_asleep() {
+        let mut tabs = TabManager::new();
+        tabs.create_tab("https://a.example");
+        tabs.create_tab("https://b.example");
+        tabs.create_tab("https://c.example");
+        tabs.suspend_tab(0);
+        tabs.suspend_tab(1);
+
+        assert!(tabs.close_tab(0));
+        assert_eq!(tabs.active_index(), 1);
+        assert_eq!(tabs.active_tab().unwrap().url, "https://c.example");
+        assert!(tabs.tabs()[0].is_suspended());
+        assert!(tabs.tabs()[0].webview.is_none());
     }
 
     #[test]

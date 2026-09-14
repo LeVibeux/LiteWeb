@@ -18,7 +18,7 @@ const KEYBAR_NORMAL: &str =
 const KEYBAR_URL: &str =
     "Entrée → naviguer  |  Ctrl+L focus  |  : → barre commande  |  Échap → annuler";
 const KEYBAR_COMMAND: &str =
-    ":open :tab new|next|prev|N :suspend :suspend-all :eco on|off|aggressive|ultra :bookmark :history  |  Entrée → exécuter  |  Échap → annuler";
+    ":open :tab new|close|next|prev|N :suspend :suspend-all :eco on|off|aggressive|ultra :bookmark :history  |  Entrée → exécuter  |  Échap → annuler";
 const LOGO_BYTES: &[u8] = include_bytes!("../../assets/liteweb-logo-grok.jpg");
 
 use crate::adblock::Blocker;
@@ -274,7 +274,7 @@ impl BrowserWindow {
         prompt.set_width_chars(1);
 
         let command_entry = Entry::new();
-        command_entry.set_placeholder_text(Some("open example.com  |  tab new [url]  |  tab next"));
+        command_entry.set_placeholder_text(Some("open example.com  |  tab new [url]  |  tab close [n]"));
         command_entry.set_hexpand(true);
         command_entry
             .style_context()
@@ -712,6 +712,26 @@ impl BrowserWindow {
                 label.set_margin_end(6);
                 tab.tab_label = Some(label.clone());
 
+                let close_btn = Button::with_label("×");
+                close_btn.set_relief(gtk::ReliefStyle::None);
+                close_btn.set_focus_on_click(false);
+                close_btn.set_tooltip_text(Some("Fermer l'onglet"));
+                let close_tab_id = tab.id;
+                let state_close = state_for_tabs.clone();
+                close_btn.connect_clicked(move |_| {
+                    let state = state_close.clone();
+                    glib::idle_add_local_once(move || {
+                        let idx = state.borrow().tabs.index_of_id(close_tab_id);
+                        if let Some(idx) = idx {
+                            Self::close_tab_at(state, idx);
+                        }
+                    });
+                });
+
+                let tab_header = GtkBox::new(Orientation::Horizontal, 2);
+                tab_header.pack_start(&label, false, false, 0);
+                tab_header.pack_start(&close_btn, false, false, 0);
+
                 let page_box = GtkBox::new(Orientation::Vertical, 0);
 
                 if tab.is_suspended() {
@@ -758,9 +778,9 @@ impl BrowserWindow {
                     }
                 }
 
-                st.notebook.append_page(&page_box, Some(&label));
+                st.notebook.append_page(&page_box, Some(&tab_header));
                 page_box.show_all();
-                label.show();
+                tab_header.show_all();
             }
 
             let current_page = if active < tab_count {
@@ -994,14 +1014,18 @@ impl BrowserWindow {
         Self::render_tabs(state.clone(), false);
     }
 
-    fn close_current_tab(state: Rc<RefCell<AppState>>) {
-        let idx = state.borrow().tabs.active_index();
-        if state.borrow_mut().tabs.close_tab(idx) {
+    fn close_tab_at(state: Rc<RefCell<AppState>>, index: usize) {
+        if state.borrow_mut().tabs.close_tab(index) {
             if state.borrow().tabs.tabs().is_empty() {
                 state.borrow_mut().tabs.create_tab("about:blank");
             }
             Self::render_tabs(state, true);
         }
+    }
+
+    fn close_current_tab(state: Rc<RefCell<AppState>>) {
+        let idx = state.borrow().tabs.active_index();
+        Self::close_tab_at(state, idx);
     }
 
     fn bookmark_current(state: Rc<RefCell<AppState>>) {
@@ -1135,6 +1159,21 @@ impl BrowserWindow {
                     st.tabs.active_index()
                 };
                 Self::switch_to_tab(state_cmd.clone(), idx);
+            }
+            CommandAction::TabClose(None) => {
+                let idx = state_cmd.borrow().tabs.active_index();
+                Self::close_tab_at(state_cmd.clone(), idx);
+            }
+            CommandAction::TabClose(Some(n)) => {
+                let count = state_cmd.borrow().tabs.tabs().len();
+                if n < count {
+                    Self::close_tab_at(state_cmd.clone(), n);
+                } else {
+                    Self::show_message(
+                        "Onglet inexistant",
+                        &format!("Aucun onglet n°{}.", n + 1),
+                    );
+                }
             }
             CommandAction::Suspend => {
                 let idx = state_cmd.borrow().tabs.active_index();
