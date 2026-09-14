@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use glib::Cast;
 use webkit2gtk::{
-    AuthenticationRequestExt, CacheModel, CookieAcceptPolicy, CookieManagerExt, DownloadExt,
+    AuthenticationRequestExt, CacheModel, CookieAcceptPolicy, CookieManagerExt,
     FileChooserRequestExt, HardwareAccelerationPolicy, NavigationPolicyDecision,
     NavigationPolicyDecisionExt, NotificationExt, PermissionRequestExt, PolicyDecisionExt,
     PolicyDecisionType, ProcessModel, ResponsePolicyDecision, ResponsePolicyDecisionExt,
@@ -191,9 +191,12 @@ pub fn create_webview(
                 let uri = response.request().and_then(|request| request.uri());
                 if !should_allow_navigation(uri.as_deref(), |candidate| {
                     blocker_policy.check(candidate)
-                }) || !response.is_mime_type_supported()
-                {
+                }) {
                     decision.ignore();
+                    return true;
+                }
+                if !response.is_mime_type_supported() {
+                    decision.download();
                     return true;
                 }
                 false
@@ -208,6 +211,10 @@ pub fn create_webview(
     webview
 }
 
+/// NOTE téléchargements : aucun handler `download-started` n'est connecté ici.
+/// `BrowserWindow::wire_downloads` DOIT être connecté avant le premier
+/// chargement (avant `render_tabs`), sinon le handler par défaut de WebKit
+/// écrirait dans le dossier XDG sans confirmation.
 #[allow(deprecated)]
 pub fn create_web_context() -> WebContext {
     let data_manager = private_data_manager();
@@ -220,9 +227,6 @@ pub fn create_web_context() -> WebContext {
     if let Some(cookies) = context.cookie_manager() {
         cookies.set_accept_policy(CookieAcceptPolicy::NoThirdParty);
     }
-    context.connect_download_started(|_, download| {
-        download.cancel();
-    });
     context
 }
 

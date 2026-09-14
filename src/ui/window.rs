@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -11,14 +12,17 @@ use gtk::{
     MessageDialog, Notebook, Orientation, Separator,
 };
 use pango::EllipsizeMode;
-use webkit2gtk::{LoadEvent, UserContentManager, WebResourceExt, WebView, WebViewExt};
+use webkit2gtk::{
+    Download, DownloadExt, LoadEvent, URIRequestExt, UserContentManager, WebContextExt,
+    WebResourceExt, WebView, WebViewExt,
+};
 
 const KEYBAR_NORMAL: &str =
     "Ctrl+L URL  |  : commandes  |  Ctrl+T onglet  |  Ctrl+W fermer  |  Ctrl+Tab suivant  |  Alt+←/→ nav  |  F5 recharger  |  Ctrl+D favori  |  Ctrl+Shift+E éco";
 const KEYBAR_URL: &str =
     "Entrée → naviguer  |  Ctrl+L focus  |  : → barre commande  |  Échap → annuler";
 const KEYBAR_COMMAND: &str =
-    ":open :tab new|close|next|prev|N :suspend :suspend-all :eco on|off|aggressive|ultra :bookmark :history  |  Entrée → exécuter  |  Échap → annuler";
+    ":open :tab new|close|next|prev|N :suspend :suspend-all :eco on|off|aggressive|ultra :bookmark :history :download  |  Entrée → exécuter  |  Échap → annuler";
 const LOGO_BYTES: &[u8] = include_bytes!("../../assets/liteweb-logo-grok.jpg");
 
 use crate::adblock::Blocker;
@@ -28,13 +32,16 @@ use crate::benchmark::{
 };
 use crate::browser::{
     apply_webview_policy, create_user_content_manager, create_web_context, create_webview,
-    flatten_html, sandbox_runtime_available, set_archaic_stylesheet, NewTabHandler, TabManager,
+    default_download_dir, flatten_html, is_forbidden_download_destination,
+    sandbox_runtime_available, sanitize_download_filename, set_archaic_stylesheet, NewTabHandler,
+    TabManager,
 };
 use crate::commands::{
-    display_navigation_url, is_safe_navigation_url, sanitize_ui_text, CommandAction, CommandPalette,
+    display_navigation_url, is_safe_navigation_url, sanitize_ui_text, should_allow_navigation,
+    CommandAction, CommandPalette,
 };
 use crate::energy::{EnergyLevel, EnergyManager};
-use crate::storage::Storage;
+use crate::storage::{Storage, DOWNLOAD_STATUS_COMPLETED, DOWNLOAD_STATUS_FAILED};
 
 struct CommandBarParts {
     bar: GtkBox,
@@ -175,6 +182,7 @@ impl BrowserWindow {
         Self::wire_command_bar(&command_bar, state.clone());
         Self::wire_shortcuts(&window, state.clone());
         Self::wire_notebook(&notebook, state.clone());
+        Self::wire_downloads(state.clone());
         Self::render_tabs(state.clone(), true);
         Self::activate_benchmark_sentinel(state.clone());
         Self::warn_if_sandbox_unavailable(state.clone());
@@ -1028,6 +1036,91 @@ impl BrowserWindow {
         Self::close_tab_at(state, idx);
     }
 
+    fn wire_downloads(state: Rc<RefCell<AppState>>) {
+        let (web_context, blocker) = {
+            let st = state.borrow();
+            (st.web_context.clone(), st.blocker.clone())
+        };
+        web_context.connect_download_started(move |_, download| {
+            let Some(uri) = download.request().and_then(|request| request.uri()) else {
+                download.cancel();
+                return;
+            };
+            if !should_allow_navigation(Some(uri.as_str()), |candidate| blocker.check(candidate)) {
+                download.cancel();
+                return;
+            }
+            let url = uri.to_string();
+            let state_dest = state.clone();
+            download.connect_decide_destination(move |download, suggested| {
+                Self::decide_download_destination(state_dest.clone(), download, &url, suggested)
+            });
+        });
+    }
+
+    fn decide_download_destination(
+        state: Rc<RefCell<AppState>>,
+        download: &Download,
+        url: &str,
+        suggested: &str,
+    ) -> bool {
+        let filename = sanitize_download_filename(suggested);
+        let storage = state.borrow().storage.clone();
+
+        let Some(path) = Self::prompt_download_destination(&filename) else {
+            download.cancel();
+            return true;
+        };
+
+        if is_forbidden_download_destination(&path) {
+            download.cancel();
+            Self::show_message(
+                "Téléchargement refusé",
+                "Impossible d'enregistrer un fichier dans le profil LiteWeb.",
+            );
+            return true;
+        }
+
+        let Ok(destination_uri) = glib::filename_to_uri(&path, None) else {
+            download.cancel();
+            return true;
+        };
+
+        download.set_allow_overwrite(true);
+        download.set_destination(&destination_uri);
+
+        if let Some(id) = storage.add_download(url, &filename, &path.to_string_lossy()) {
+            let storage_done = storage.clone();
+            download.connect_finished(move |_| {
+                storage_done.mark_download(id, DOWNLOAD_STATUS_COMPLETED);
+            });
+            download.connect_failed(move |_, _| {
+                storage.mark_download(id, DOWNLOAD_STATUS_FAILED);
+            });
+        }
+        true
+    }
+
+    fn prompt_download_destination(filename: &str) -> Option<PathBuf> {
+        let dialog = gtk::FileChooserNative::new(
+            Some("Enregistrer le fichier"),
+            None::<&gtk::Window>,
+            gtk::FileChooserAction::Save,
+            Some("Enregistrer"),
+            Some("Annuler"),
+        );
+        dialog.set_do_overwrite_confirmation(true);
+        dialog.set_current_folder(default_download_dir());
+        dialog.set_current_name(filename);
+        let response = dialog.run();
+        let path = dialog.filename();
+        if response == gtk::ResponseType::Accept {
+            path
+        } else {
+            None
+        }
+    }
+
     fn bookmark_current(state: Rc<RefCell<AppState>>) {
         let st = state.borrow();
         if let Some(tab) = st.tabs.active_tab() {
@@ -1210,10 +1303,7 @@ impl BrowserWindow {
             CommandAction::BookmarkAdd => Self::bookmark_current(state_cmd.clone()),
             CommandAction::BookmarkList => Self::show_bookmarks(state_cmd.clone()),
             CommandAction::History => Self::show_history(state_cmd.clone()),
-            CommandAction::DownloadList => Self::show_message(
-                "Téléchargements",
-                "Gestion des téléchargements — bientôt disponible.",
-            ),
+            CommandAction::DownloadList => Self::show_downloads(state_cmd.clone()),
             CommandAction::Unknown(cmd) => {
                 Self::show_message("Commande inconnue", &format!("'{cmd}' n'est pas reconnue."));
             }
@@ -1259,6 +1349,33 @@ impl BrowserWindow {
                 .join("\n")
         };
         Self::show_message("Historique", &text);
+    }
+
+    fn show_downloads(state: Rc<RefCell<AppState>>) {
+        let entries = state.borrow().storage.recent_downloads(20);
+        let text = if entries.is_empty() {
+            "Aucun téléchargement.".to_string()
+        } else {
+            entries
+                .iter()
+                .map(|entry| {
+                    let status = match entry.status.as_str() {
+                        DOWNLOAD_STATUS_COMPLETED => "terminé",
+                        DOWNLOAD_STATUS_FAILED => "échoué",
+                        _ => "en cours",
+                    };
+                    format!(
+                        "• {} — {} → {} [{}]",
+                        sanitize_ui_text(&entry.filename),
+                        display_navigation_url(&entry.url),
+                        sanitize_ui_text(&entry.path),
+                        status
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        Self::show_message("Téléchargements", &text);
     }
 
     fn show_message(title: &str, body: &str) {

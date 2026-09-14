@@ -266,6 +266,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_download_list() {
+        assert_eq!(
+            CommandPalette::parse(":download"),
+            CommandAction::DownloadList
+        );
+    }
+
+    #[test]
+    fn parses_dl_alias() {
+        assert_eq!(CommandPalette::parse(":dl"), CommandAction::DownloadList);
+    }
+
+    #[test]
     fn tab_empty_is_unknown() {
         match CommandPalette::parse(":tab") {
             CommandAction::Unknown(_) => {}
