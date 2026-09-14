@@ -81,6 +81,6 @@ Tests unitaires dans `palette.rs` :
 
 ## Out of scope
 
-- Fermeture d’onglet via commande (`:tab close`)
+- Fermeture d’onglet (graphique + `:tab close`) — voir `2026-09-14-tab-close-design.md`
 - Alias courts (`:tn`, `:tp`)
 - Changement du comportement de Ctrl+T
