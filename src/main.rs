@@ -4,6 +4,7 @@ mod benchmark;
 mod browser;
 mod commands;
 mod energy;
+mod privacy;
 mod storage;
 mod ui;
 
