@@ -1,6 +1,7 @@
 //! Mode privé / anti-détection. Voir `docs/superpowers/specs/privacy-mode.md`.
 
 pub mod config;
+pub mod cookies;
 pub mod settings;
 
 pub use config::{privacy_settings, PrivacySettings, PRIVACY_DATA_DIR, PRIVACY_FINGERPRINT};
