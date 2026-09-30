@@ -4,6 +4,7 @@ pub mod config;
 pub mod cookies;
 pub mod fingerprint;
 pub mod headers;
+pub mod network;
 pub mod permissions;
 pub mod settings;
 pub mod tracker;
@@ -18,6 +19,12 @@ pub use fingerprint::{fingerprint_script, inject_fingerprint, FINGERPRINT_WORLD}
 pub use headers::{
     apply_referer_policy, harden_outgoing_request, harden_request_headers, referer_policy,
     STRIPPED_CLIENT_HINTS,
+};
+pub use network::{
+    detect_vpn, drain_kill_switch_notifications, format_vpn_status, is_internal_host,
+    kill_switch_uri_allowed, notify_kill_switch_blocked, provider_for_interface, vpn_interfaces_up,
+    vpn_kill_switch, KillSwitch, VpnStatus, MSG_VPN_BLOCKED_BODY, MSG_VPN_BLOCKED_TITLE,
+    VPN_LOST_URI, VPN_OVERLAY_POLL, VPN_RECHECK_TICK,
 };
 pub use permissions::{describe_permission, permission_denied, permission_origin, PERMISSION_APIS};
 pub use settings::{
@@ -58,18 +65,5 @@ impl PrivacyPolicy {
             }
             _ => false,
         }
-    }
-}
-
-#[derive(Clone)]
-pub struct KillSwitch {
-    vpn_required: bool,
-}
-impl KillSwitch {
-    pub fn new(vpn_required: bool) -> Self {
-        Self { vpn_required }
-    }
-    pub fn allow_navigation(&self, _uri: &str) -> bool {
-        !self.vpn_required
     }
 }

@@ -200,6 +200,7 @@ impl BrowserWindow {
         Self::warn_if_sandbox_unavailable(state.clone());
         Self::start_energy_timer(state.clone());
         Self::start_privacy_timer(state.clone());
+        Self::start_vpn_timer(state.clone());
         Self::start_benchmark_timer(state.clone(), app.clone());
 
         Self { window, state }
@@ -956,6 +957,14 @@ impl BrowserWindow {
             return;
         }
 
+        if !state.borrow().privacy.kill_switch.allow_navigation(&url) {
+            Self::show_message(
+                crate::privacy::MSG_VPN_BLOCKED_TITLE,
+                crate::privacy::MSG_VPN_BLOCKED_BODY,
+            );
+            return;
+        }
+
         let mut st = state.borrow_mut();
         let idx = st.tabs.active_index();
         if let Some(tab) = st.tabs.tabs_mut().get_mut(idx) {
@@ -1406,6 +1415,33 @@ impl BrowserWindow {
         dialog.set_title(title);
         dialog.connect_response(|d, _| d.close());
         dialog.show_all();
+    }
+
+    fn start_vpn_timer(state: Rc<RefCell<AppState>>) {
+        glib::timeout_add_local(crate::privacy::VPN_RECHECK_TICK, move || {
+            let required = state.borrow().privacy.kill_switch.is_required();
+            if !required {
+                return glib::Continue(true);
+            }
+            if crate::privacy::detect_vpn().connected {
+                return glib::Continue(true);
+            }
+            let views: Vec<webkit2gtk::WebView> = {
+                let st = state.borrow();
+                st.tabs
+                    .tabs()
+                    .iter()
+                    .filter_map(|tab| tab.webview.clone())
+                    .collect()
+            };
+            for view in views {
+                if view.uri().as_deref() != Some(crate::privacy::VPN_LOST_URI) {
+                    view.stop_loading();
+                    view.load_uri(crate::privacy::VPN_LOST_URI);
+                }
+            }
+            glib::Continue(true)
+        });
     }
 
     fn start_privacy_timer(state: Rc<RefCell<AppState>>) {
