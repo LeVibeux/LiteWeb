@@ -876,6 +876,7 @@ dependencies = [
  "scraper",
  "serde",
  "serde_json",
+ "soup3",
  "url",
  "webkit2gtk",
 ]

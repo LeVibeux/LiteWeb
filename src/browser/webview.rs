@@ -210,6 +210,13 @@ pub fn create_webview(
         }
     });
 
+    // En-têtes sortants : DNT, Accept-Language figé, Referer réduit/supprimé,
+    // tous les Sec-CH-* strippés. `view.uri()` est la page first-party.
+    webview.connect_resource_load_started(|view, _resource, request| {
+        let page_uri = view.uri();
+        crate::privacy::harden_outgoing_request(request, page_uri.as_deref());
+    });
+
     webview
 }
 

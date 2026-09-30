@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod cookies;
+pub mod headers;
 pub mod settings;
 pub mod tracker;
 
@@ -10,6 +11,10 @@ pub use cookies::{
     purge_expired_sandboxes, sandbox_dir_name, sandbox_dirs, should_accept_cookie,
     should_delete_cookie, site_origin, SiteSandbox, SiteSandboxRegistry, PURGE_TICK,
     SANDBOX_IDLE_LIMIT,
+};
+pub use headers::{
+    apply_referer_policy, harden_outgoing_request, harden_request_headers, referer_policy,
+    STRIPPED_CLIENT_HINTS,
 };
 pub use settings::{
     clear_previous_session_blocking, create_private_web_context, harden_settings,
