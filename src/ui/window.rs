@@ -13,8 +13,8 @@ use gtk::{
 };
 use pango::EllipsizeMode;
 use webkit2gtk::{
-    Download, DownloadExt, LoadEvent, URIRequestExt, UserContentManager, WebContextExt,
-    WebResourceExt, WebView, WebViewExt,
+    Download, DownloadExt, LoadEvent, SettingsExt, URIRequestExt, UserContentManager,
+    UserContentManagerExt, WebContextExt, WebResourceExt, WebView, WebViewExt,
 };
 
 const KEYBAR_NORMAL: &str =
@@ -22,7 +22,7 @@ const KEYBAR_NORMAL: &str =
 const KEYBAR_URL: &str =
     "Entrée → naviguer  |  Ctrl+L focus  |  : → barre commande  |  Échap → annuler";
 const KEYBAR_COMMAND: &str =
-    ":open :tab new|close|next|prev|N :suspend :suspend-all :eco on|off|aggressive|ultra :bookmark :history :download  |  Entrée → exécuter  |  Échap → annuler";
+    ":open :tab new|close|next|prev|N :suspend :suspend-all :eco on|off|aggressive|ultra :bookmark :history :download :privacy on|off :vpn on|off  |  Entrée → exécuter  |  Échap → annuler";
 const LOGO_BYTES: &[u8] = include_bytes!("../../assets/liteweb-logo-grok.jpg");
 
 use crate::adblock::Blocker;
@@ -99,16 +99,23 @@ impl BrowserWindow {
     pub fn new(app: &Application, benchmark: Option<BenchmarkConfig>) -> Self {
         let blocker = Rc::new(Blocker::new());
         let storage = Storage::open();
-        let web_context = create_web_context();
-        // TODO(privacy-task6): lire `vpn_required` depuis Storage.
-        let privacy = crate::privacy::PrivacyPolicy::new(false);
+        let privacy_on = storage.get_setting("privacy_enabled").as_deref() == Some("1");
+        let vpn_on = storage.get_setting("vpn_required").as_deref() == Some("1");
+        let web_context = if privacy_on {
+            crate::privacy::create_private_web_context()
+        } else {
+            create_web_context()
+        };
+        let privacy = crate::privacy::PrivacyPolicy::new(privacy_on, vpn_on);
         let sandboxes = std::rc::Rc::new(std::cell::RefCell::new(
             crate::privacy::SiteSandboxRegistry::new(
                 crate::privacy::SiteSandboxRegistry::default_root(),
             ),
         ));
         let user_content = create_user_content_manager();
-        crate::privacy::inject_fingerprint(&user_content);
+        if privacy_on {
+            crate::privacy::inject_fingerprint(&user_content);
+        }
 
         let window = ApplicationWindow::builder()
             .application(app)
@@ -1330,11 +1337,101 @@ impl BrowserWindow {
             CommandAction::BookmarkList => Self::show_bookmarks(state_cmd.clone()),
             CommandAction::History => Self::show_history(state_cmd.clone()),
             CommandAction::DownloadList => Self::show_downloads(state_cmd.clone()),
+            CommandAction::PrivacyStatus => Self::show_privacy_status(state_cmd.clone()),
+            CommandAction::PrivacySet(enabled) => {
+                Self::set_privacy_packet(state_cmd.clone(), enabled)
+            }
+            CommandAction::VpnStatus => Self::show_vpn_status(state_cmd.clone()),
+            CommandAction::VpnSet(required) => Self::set_vpn_packet(state_cmd.clone(), required),
             CommandAction::Unknown(cmd) => {
                 Self::show_message("Commande inconnue", &format!("'{cmd}' n'est pas reconnue."));
             }
         }
         state.borrow().command_entry.set_text("");
+    }
+
+    fn show_privacy_status(state: Rc<RefCell<AppState>>) {
+        let on = state.borrow().privacy.is_enabled();
+        let text = if on {
+            "Paquet privé : actif.\n\n\
+             Empreinte figée, en-têtes durcis, EasyPrivacy, purge cookies 5 min.\n\
+             :privacy off pour revenir au navigateur normal.\n\
+             Relance LiteWeb si tu viens de l'activer : l'isolation cookies utilise un profil séparé."
+        } else {
+            "Paquet privé : inactif.\n\n\
+             :privacy on — empreinte, en-têtes, traqueurs, purge cookies.\n\
+             :vpn on — bloquer la navigation publique sans VPN."
+        };
+        Self::show_message("Confidentialité", text);
+    }
+
+    fn set_privacy_packet(state: Rc<RefCell<AppState>>, enabled: bool) {
+        {
+            let st = state.borrow();
+            st.privacy.set_enabled(enabled);
+            st.storage
+                .set_setting("privacy_enabled", if enabled { "1" } else { "0" });
+            if enabled {
+                crate::privacy::inject_fingerprint(&st.user_content);
+            } else {
+                st.user_content.remove_all_scripts();
+            }
+        }
+        let (policy, webviews) = {
+            let st = state.borrow();
+            let policy = st.energy.level().webview_policy();
+            let webviews: Vec<webkit2gtk::WebView> = st
+                .tabs
+                .tabs()
+                .iter()
+                .filter_map(|tab| tab.webview.clone())
+                .collect();
+            (policy, webviews)
+        };
+        for webview in webviews {
+            if let Some(settings) = WebViewExt::settings(&webview) {
+                if enabled {
+                    crate::privacy::harden_settings(&settings);
+                } else {
+                    settings.set_user_agent(None);
+                }
+            }
+            apply_webview_policy(&webview, policy);
+        }
+        let text = if enabled {
+            "Paquet privé activé.\n\
+             Empreinte, en-têtes et traqueurs s'appliquent aux pages rechargées.\n\
+             Relance LiteWeb pour isoler les cookies dans un profil séparé."
+        } else {
+            "Paquet privé désactivé.\n\
+             Recharge les onglets pour retrouver l'empreinte système."
+        };
+        Self::show_message("Confidentialité", text);
+    }
+
+    fn show_vpn_status(state: Rc<RefCell<AppState>>) {
+        let text = state.borrow().privacy.kill_switch.describe();
+        Self::show_message("VPN", &text);
+    }
+
+    fn set_vpn_packet(state: Rc<RefCell<AppState>>, required: bool) {
+        {
+            let st = state.borrow();
+            st.privacy.kill_switch.set_required(required);
+            st.storage
+                .set_setting("vpn_required", if required { "1" } else { "0" });
+        }
+        let connected = crate::privacy::detect_vpn().connected;
+        let text = if required && !connected {
+            "Kill-switch VPN activé.\n\
+             La navigation publique est bloquée tant qu'aucun VPN n'est connecté.\n\
+             localhost et le réseau local restent autorisés."
+        } else if required {
+            "Kill-switch VPN activé. Un VPN est détecté."
+        } else {
+            "Kill-switch VPN désactivé. La navigation ne dépend plus du VPN."
+        };
+        Self::show_message("VPN", text);
     }
 
     fn show_bookmarks(state: Rc<RefCell<AppState>>) {
@@ -1447,6 +1544,9 @@ impl BrowserWindow {
     fn start_privacy_timer(state: Rc<RefCell<AppState>>) {
         glib::timeout_add_local(crate::privacy::PURGE_TICK, move || {
             let now = chrono::Utc::now();
+            if !state.borrow().privacy.is_enabled() {
+                return glib::Continue(true);
+            }
             let expired = {
                 let st = state.borrow();
                 let sandboxes = st.sandboxes.borrow();

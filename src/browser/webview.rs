@@ -155,7 +155,9 @@ pub fn create_webview(
 ) -> WebView {
     let webview = WebView::new_with_context_and_user_content_manager(context, content);
     if let Some(settings) = webview.settings() {
-        harden_settings(&settings);
+        if privacy.is_enabled() {
+            harden_settings(&settings);
+        }
     }
     apply_webview_policy(&webview, policy);
 
@@ -277,7 +279,11 @@ pub fn create_webview(
 
     // En-têtes sortants : DNT, Accept-Language figé, Referer réduit/supprimé,
     // tous les Sec-CH-* strippés. `view.uri()` est la page first-party.
-    webview.connect_resource_load_started(|view, _resource, request| {
+    let privacy_headers = privacy.clone();
+    webview.connect_resource_load_started(move |view, _resource, request| {
+        if !privacy_headers.is_enabled() {
+            return;
+        }
         let page_uri = view.uri();
         crate::privacy::harden_outgoing_request(request, page_uri.as_deref());
     });
@@ -285,14 +291,20 @@ pub fn create_webview(
     webview
 }
 
-/// NOTE téléchargements : aucun handler `download-started` n'est connecté ici.
-/// `BrowserWindow::wire_downloads` DOIT être connecté avant le premier
-/// chargement (avant `render_tabs`).
-/// NOTE confidentialité : le contexte privé est construit par
-/// `privacy::create_private_web_context`.
+/// Contexte WebKit standard (paquet privé off).
 #[allow(deprecated)]
 pub fn create_web_context() -> WebContext {
-    crate::privacy::create_private_web_context()
+    let data_manager = private_data_manager();
+    let context = WebContext::with_website_data_manager(&data_manager);
+    context.set_cache_model(CacheModel::DocumentViewer);
+    context.set_process_model(ProcessModel::MultipleSecondaryProcesses);
+    context.set_sandbox_enabled(true);
+    context.set_tls_errors_policy(TLSErrorsPolicy::Fail);
+    context.set_automation_allowed(false);
+    if let Some(cookies) = context.cookie_manager() {
+        cookies.set_accept_policy(CookieAcceptPolicy::NoThirdParty);
+    }
+    context
 }
 
 // TODO(privacy-task2): retirer après migration complète vers privacy::settings.

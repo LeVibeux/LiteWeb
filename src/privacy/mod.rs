@@ -33,28 +33,41 @@ pub use settings::{
 };
 pub use tracker::{is_tracker_host, TrackerBlocker};
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::privacy::tracker::TrackerBlocker as TrackerBlockerType;
 
-/// Faisceau consommé par `create_webview` : blocage traqueurs + kill-switch.
+/// Faisceau partagé par tous les onglets. Les drapeaux sont dans des `Cell`
+/// pour que `:privacy` et `:vpn` mettent à jour les WebView déjà ouvertes.
 #[derive(Clone)]
 pub struct PrivacyPolicy {
     pub tracker: Rc<TrackerBlockerType>,
     pub kill_switch: KillSwitch,
+    enabled: Rc<Cell<bool>>,
 }
 
 impl PrivacyPolicy {
-    pub fn new(vpn_required: bool) -> Self {
+    pub fn new(enabled: bool, vpn_required: bool) -> Self {
         Self {
             tracker: Rc::new(TrackerBlockerType::load_bundled()),
             kill_switch: KillSwitch::new(vpn_required),
+            enabled: Rc::new(Cell::new(enabled)),
         }
     }
 
-    /// true si l'URL doit être bloquée (traqueur EasyPrivacy).
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.get()
+    }
+
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.set(enabled);
+    }
+
+    /// true si l'URL doit être bloquée (traqueur EasyPrivacy). Inerte si le
+    /// paquet privé est off.
     pub fn is_blocked(&self, url: &str) -> bool {
-        self.tracker.is_blocked(url)
+        self.is_enabled() && self.tracker.is_blocked(url)
     }
 
     /// Allowlist existante + kill-switch VPN. Fail-closed : `None` → refus.

@@ -1,4 +1,6 @@
+use std::cell::Cell;
 use std::path::Path;
+use std::rc::Rc;
 use std::time::Duration;
 
 use url::Url;
@@ -177,24 +179,26 @@ pub fn format_vpn_status(status: &VpnStatus, required: bool) -> String {
 
 #[derive(Clone)]
 pub struct KillSwitch {
-    vpn_required: bool,
+    vpn_required: Rc<Cell<bool>>,
 }
 
 impl KillSwitch {
     pub fn new(vpn_required: bool) -> Self {
-        Self { vpn_required }
+        Self {
+            vpn_required: Rc::new(Cell::new(vpn_required)),
+        }
     }
 
-    pub fn set_required(&mut self, required: bool) {
-        self.vpn_required = required;
+    pub fn set_required(&self, required: bool) {
+        self.vpn_required.set(required);
     }
 
     pub fn is_required(&self) -> bool {
-        self.vpn_required
+        self.vpn_required.get()
     }
 
     pub fn allow_navigation(&self, uri: &str) -> bool {
-        if !self.vpn_required {
+        if !self.is_required() {
             return true;
         }
         vpn_kill_switch(detect_vpn().connected, uri)
@@ -205,7 +209,7 @@ impl KillSwitch {
     }
 
     pub fn describe(&self) -> String {
-        format_vpn_status(&self.status(), self.vpn_required)
+        format_vpn_status(&self.status(), self.is_required())
     }
 }
 
