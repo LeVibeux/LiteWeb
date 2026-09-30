@@ -153,6 +153,9 @@ pub fn create_webview(
 
     let privacy_policy = privacy.clone();
     webview.connect_decide_policy(move |_view, decision, decision_type| {
+        let tracker = privacy_policy.tracker.clone();
+        let is_blocked =
+            |candidate: &str| blocker.check(candidate) || tracker.is_blocked(candidate);
         match decision_type {
             PolicyDecisionType::NavigationAction => {
                 let uri = decision
@@ -160,9 +163,7 @@ pub fn create_webview(
                     .and_then(|d| d.navigation_action())
                     .and_then(|action| action.request())
                     .and_then(|r| r.uri());
-                if privacy_policy
-                    .navigation_allowed(uri.as_deref(), |candidate| blocker.check(candidate))
-                {
+                if privacy_policy.navigation_allowed(uri.as_deref(), &is_blocked) {
                     false
                 } else {
                     decision.ignore();
@@ -176,9 +177,7 @@ pub fn create_webview(
                     .and_then(|d| d.navigation_action())
                     .and_then(|action| action.request())
                     .and_then(|r| r.uri());
-                if privacy_policy
-                    .navigation_allowed(uri.as_deref(), |candidate| blocker.check(candidate))
-                {
+                if privacy_policy.navigation_allowed(uri.as_deref(), &is_blocked) {
                     if let Some(uri) = uri {
                         let on_new_tab = on_new_tab.clone();
                         let url = uri.to_string();
@@ -194,9 +193,7 @@ pub fn create_webview(
                     return true;
                 };
                 let uri = response.request().and_then(|request| request.uri());
-                if !privacy_policy
-                    .navigation_allowed(uri.as_deref(), |candidate| blocker.check(candidate))
-                {
+                if !privacy_policy.navigation_allowed(uri.as_deref(), &is_blocked) {
                     decision.ignore();
                     return true;
                 }

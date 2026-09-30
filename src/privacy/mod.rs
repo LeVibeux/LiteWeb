@@ -3,6 +3,7 @@
 pub mod config;
 pub mod cookies;
 pub mod settings;
+pub mod tracker;
 
 pub use config::{privacy_settings, PrivacySettings, PRIVACY_DATA_DIR, PRIVACY_FINGERPRINT};
 pub use cookies::{
@@ -14,20 +15,23 @@ pub use settings::{
     clear_previous_session_blocking, create_private_web_context, harden_settings,
     harden_web_context,
 };
+pub use tracker::{is_tracker_host, TrackerBlocker};
 
 use std::rc::Rc;
+
+use crate::privacy::tracker::TrackerBlocker as TrackerBlockerType;
 
 /// Faisceau consommé par `create_webview` : blocage traqueurs + kill-switch.
 #[derive(Clone)]
 pub struct PrivacyPolicy {
-    pub tracker: Rc<TrackerBlocker>,
+    pub tracker: Rc<TrackerBlockerType>,
     pub kill_switch: KillSwitch,
 }
 
 impl PrivacyPolicy {
     pub fn new(vpn_required: bool) -> Self {
         Self {
-            tracker: Rc::new(TrackerBlocker::load_bundled()),
+            tracker: Rc::new(TrackerBlockerType::load_bundled()),
             kill_switch: KillSwitch::new(vpn_required),
         }
     }
@@ -45,17 +49,6 @@ impl PrivacyPolicy {
             }
             _ => false,
         }
-    }
-}
-
-// TEMPORAIRE (Task 1) — remplacé par privacy::tracker puis privacy::network.
-pub struct TrackerBlocker;
-impl TrackerBlocker {
-    pub fn load_bundled() -> Self {
-        Self
-    }
-    pub fn is_blocked(&self, _url: &str) -> bool {
-        false
     }
 }
 
