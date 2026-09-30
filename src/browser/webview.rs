@@ -15,6 +15,7 @@ use webkit2gtk::{
 use crate::adblock::Blocker;
 use crate::commands::should_allow_navigation;
 use crate::energy::WebViewPolicy;
+use crate::privacy::{harden_settings, PrivacyPolicy};
 
 pub const ARCHAIC_STYLESHEET: &str = r#"
 html, body { background: #f4f1e8 !important; color: #1a1a1a !important; overflow-y: auto !important; height: auto !important; }
@@ -98,11 +99,15 @@ pub fn set_archaic_stylesheet(content: &UserContentManager, enabled: bool) {
 pub fn create_webview(
     context: &WebContext,
     blocker: Rc<Blocker>,
+    privacy: &PrivacyPolicy,
     content: &UserContentManager,
     policy: WebViewPolicy,
     on_new_tab: NewTabHandler,
 ) -> WebView {
     let webview = WebView::new_with_context_and_user_content_manager(context, content);
+    if let Some(settings) = webview.settings() {
+        harden_settings(&settings);
+    }
     apply_webview_policy(&webview, policy);
 
     if let Some(settings) = webview.settings() {
@@ -146,7 +151,7 @@ pub fn create_webview(
         true
     });
 
-    let blocker_policy = blocker.clone();
+    let privacy_policy = privacy.clone();
     webview.connect_decide_policy(move |_view, decision, decision_type| {
         match decision_type {
             PolicyDecisionType::NavigationAction => {
@@ -155,9 +160,9 @@ pub fn create_webview(
                     .and_then(|d| d.navigation_action())
                     .and_then(|action| action.request())
                     .and_then(|r| r.uri());
-                if should_allow_navigation(uri.as_deref(), |candidate| {
-                    blocker_policy.check(candidate)
-                }) {
+                if privacy_policy
+                    .navigation_allowed(uri.as_deref(), |candidate| blocker.check(candidate))
+                {
                     false
                 } else {
                     decision.ignore();
@@ -171,9 +176,9 @@ pub fn create_webview(
                     .and_then(|d| d.navigation_action())
                     .and_then(|action| action.request())
                     .and_then(|r| r.uri());
-                if should_allow_navigation(uri.as_deref(), |candidate| {
-                    blocker_policy.check(candidate)
-                }) {
+                if privacy_policy
+                    .navigation_allowed(uri.as_deref(), |candidate| blocker.check(candidate))
+                {
                     if let Some(uri) = uri {
                         let on_new_tab = on_new_tab.clone();
                         let url = uri.to_string();
@@ -189,9 +194,9 @@ pub fn create_webview(
                     return true;
                 };
                 let uri = response.request().and_then(|request| request.uri());
-                if !should_allow_navigation(uri.as_deref(), |candidate| {
-                    blocker_policy.check(candidate)
-                }) {
+                if !privacy_policy
+                    .navigation_allowed(uri.as_deref(), |candidate| blocker.check(candidate))
+                {
                     decision.ignore();
                     return true;
                 }
@@ -213,23 +218,17 @@ pub fn create_webview(
 
 /// NOTE téléchargements : aucun handler `download-started` n'est connecté ici.
 /// `BrowserWindow::wire_downloads` DOIT être connecté avant le premier
-/// chargement (avant `render_tabs`), sinon le handler par défaut de WebKit
-/// écrirait dans le dossier XDG sans confirmation.
+/// chargement (avant `render_tabs`).
+/// NOTE confidentialité : le contexte privé est construit par
+/// `privacy::create_private_web_context`.
 #[allow(deprecated)]
 pub fn create_web_context() -> WebContext {
-    let data_manager = private_data_manager();
-    let context = WebContext::with_website_data_manager(&data_manager);
-    context.set_cache_model(CacheModel::DocumentViewer);
-    context.set_process_model(ProcessModel::MultipleSecondaryProcesses);
-    context.set_sandbox_enabled(true);
-    context.set_tls_errors_policy(TLSErrorsPolicy::Fail);
-    context.set_automation_allowed(false);
-    if let Some(cookies) = context.cookie_manager() {
-        cookies.set_accept_policy(CookieAcceptPolicy::NoThirdParty);
-    }
-    context
+    crate::privacy::create_private_web_context()
 }
 
+// TODO(privacy-task2): retirer après migration complète vers privacy::settings.
+// Les tests existants dans ce fichier référencent encore ces helpers.
+#[allow(dead_code)]
 fn private_data_manager() -> WebsiteDataManager {
     let data_dir = dirs::data_dir().map(|path| path.join("liteweb").join("webkit"));
     let cache_dir = dirs::cache_dir().map(|path| path.join("liteweb").join("webkit"));

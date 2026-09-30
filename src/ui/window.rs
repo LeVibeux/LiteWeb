@@ -71,6 +71,7 @@ struct AppState {
     storage: Storage,
     energy: EnergyManager,
     blocker: Rc<Blocker>,
+    privacy: crate::privacy::PrivacyPolicy,
     web_context: webkit2gtk::WebContext,
     user_content: UserContentManager,
     notebook: Notebook,
@@ -98,6 +99,8 @@ impl BrowserWindow {
         let blocker = Rc::new(Blocker::new());
         let storage = Storage::open();
         let web_context = create_web_context();
+        // TODO(privacy-task6): lire `vpn_required` depuis Storage.
+        let privacy = crate::privacy::PrivacyPolicy::new(false);
         let user_content = create_user_content_manager();
 
         let window = ApplicationWindow::builder()
@@ -166,6 +169,7 @@ impl BrowserWindow {
             storage,
             energy,
             blocker: blocker.clone(),
+            privacy,
             web_context,
             user_content,
             notebook: notebook.clone(),
@@ -282,7 +286,8 @@ impl BrowserWindow {
         prompt.set_width_chars(1);
 
         let command_entry = Entry::new();
-        command_entry.set_placeholder_text(Some("open example.com  |  tab new [url]  |  tab close [n]"));
+        command_entry
+            .set_placeholder_text(Some("open example.com  |  tab new [url]  |  tab close [n]"));
         command_entry.set_hexpand(true);
         command_entry
             .style_context()
@@ -673,6 +678,7 @@ impl BrowserWindow {
             let mut st = state.borrow_mut();
             let web_context = st.web_context.clone();
             let blocker = st.blocker.clone();
+            let privacy = st.privacy.clone();
             let user_content = st.user_content.clone();
             let policy = st.energy.level().webview_policy();
             let storage = st.storage.clone();
@@ -686,6 +692,7 @@ impl BrowserWindow {
                 let wv = create_webview(
                     &web_context,
                     blocker.clone(),
+                    &privacy,
                     &user_content,
                     policy,
                     on_new_tab.clone(),
@@ -705,6 +712,7 @@ impl BrowserWindow {
             let active = st.tabs.active_index();
             let web_context = st.web_context.clone();
             let blocker = st.blocker.clone();
+            let privacy = st.privacy.clone();
             let user_content = st.user_content.clone();
             let policy = st.energy.level().webview_policy();
             let storage = st.storage.clone();
@@ -754,6 +762,7 @@ impl BrowserWindow {
                         let wv = create_webview(
                             &web_context,
                             blocker.clone(),
+                            &privacy,
                             &user_content,
                             policy,
                             on_new_tab.clone(),
@@ -1262,10 +1271,7 @@ impl BrowserWindow {
                 if n < count {
                     Self::close_tab_at(state_cmd.clone(), n);
                 } else {
-                    Self::show_message(
-                        "Onglet inexistant",
-                        &format!("Aucun onglet n°{}.", n + 1),
-                    );
+                    Self::show_message("Onglet inexistant", &format!("Aucun onglet n°{}.", n + 1));
                 }
             }
             CommandAction::Suspend => {
