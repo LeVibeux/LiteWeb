@@ -72,6 +72,7 @@ struct AppState {
     energy: EnergyManager,
     blocker: Rc<Blocker>,
     privacy: crate::privacy::PrivacyPolicy,
+    sandboxes: std::rc::Rc<std::cell::RefCell<crate::privacy::SiteSandboxRegistry>>,
     web_context: webkit2gtk::WebContext,
     user_content: UserContentManager,
     notebook: Notebook,
@@ -101,6 +102,11 @@ impl BrowserWindow {
         let web_context = create_web_context();
         // TODO(privacy-task6): lire `vpn_required` depuis Storage.
         let privacy = crate::privacy::PrivacyPolicy::new(false);
+        let sandboxes = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::privacy::SiteSandboxRegistry::new(
+                crate::privacy::SiteSandboxRegistry::default_root(),
+            ),
+        ));
         let user_content = create_user_content_manager();
 
         let window = ApplicationWindow::builder()
@@ -170,6 +176,7 @@ impl BrowserWindow {
             energy,
             blocker: blocker.clone(),
             privacy,
+            sandboxes,
             web_context,
             user_content,
             notebook: notebook.clone(),
@@ -191,6 +198,7 @@ impl BrowserWindow {
         Self::activate_benchmark_sentinel(state.clone());
         Self::warn_if_sandbox_unavailable(state.clone());
         Self::start_energy_timer(state.clone());
+        Self::start_privacy_timer(state.clone());
         Self::start_benchmark_timer(state.clone(), app.clone());
 
         Self { window, state }
@@ -1395,6 +1403,34 @@ impl BrowserWindow {
         dialog.set_title(title);
         dialog.connect_response(|d, _| d.close());
         dialog.show_all();
+    }
+
+    fn start_privacy_timer(state: Rc<RefCell<AppState>>) {
+        glib::timeout_add_local(crate::privacy::PURGE_TICK, move || {
+            let now = chrono::Utc::now();
+            let expired = {
+                let st = state.borrow();
+                let sandboxes = st.sandboxes.borrow();
+                let result = sandboxes.purgeable(now, crate::privacy::SANDBOX_IDLE_LIMIT);
+                drop(sandboxes);
+                drop(st);
+                result
+            };
+            if expired.is_empty() {
+                return glib::Continue(true);
+            }
+            let context = state.borrow().web_context.clone();
+            let origins: Vec<String> = expired.iter().map(|s| s.origin.clone()).collect();
+            let registry = state.borrow().sandboxes.clone();
+            let purged = crate::privacy::purge_expired_sandboxes(&context, &expired);
+            if purged > 0 {
+                let mut reg = registry.borrow_mut();
+                for origin in origins {
+                    reg.forget(&origin);
+                }
+            }
+            glib::Continue(true)
+        });
     }
 
     fn start_energy_timer(state: Rc<RefCell<AppState>>) {

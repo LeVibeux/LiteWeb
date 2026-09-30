@@ -5,6 +5,11 @@ pub mod cookies;
 pub mod settings;
 
 pub use config::{privacy_settings, PrivacySettings, PRIVACY_DATA_DIR, PRIVACY_FINGERPRINT};
+pub use cookies::{
+    purge_expired_sandboxes, sandbox_dir_name, sandbox_dirs, should_accept_cookie,
+    should_delete_cookie, site_origin, SiteSandbox, SiteSandboxRegistry, PURGE_TICK,
+    SANDBOX_IDLE_LIMIT,
+};
 pub use settings::{
     clear_previous_session_blocking, create_private_web_context, harden_settings,
     harden_web_context,
