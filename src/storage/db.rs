@@ -36,6 +36,14 @@ pub const DOWNLOAD_STATUS_IN_PROGRESS: &str = "in_progress";
 pub const DOWNLOAD_STATUS_COMPLETED: &str = "completed";
 pub const DOWNLOAD_STATUS_FAILED: &str = "failed";
 
+#[derive(Debug, Clone)]
+pub struct PermissionRecord {
+    pub origin: String,
+    pub api: String,
+    pub granted: bool,
+    pub granted_at: DateTime<Utc>,
+}
+
 #[derive(Clone)]
 pub struct Storage {
     conn: std::sync::Arc<std::sync::Mutex<Connection>>,
@@ -122,8 +130,20 @@ impl Storage {
                     status TEXT NOT NULL,
                     started_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS permissions (
+                    origin TEXT NOT NULL,
+                    api TEXT NOT NULL,
+                    granted INTEGER NOT NULL DEFAULT 1,
+                    granted_at TEXT NOT NULL,
+                    PRIMARY KEY (origin, api)
+                );
                 CREATE INDEX IF NOT EXISTS idx_history_visited ON history(visited_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_downloads_started ON downloads(started_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_permissions_granted_at ON permissions(granted_at DESC);
                 ",
         )?;
         Ok(())
@@ -254,6 +274,88 @@ impl Storage {
                 path: row.get(2)?,
                 status: row.get(3)?,
                 started_at: started_at.parse().unwrap_or_else(|_| Utc::now()),
+            })
+        }) else {
+            return Vec::new();
+        };
+        rows.filter_map(Result::ok).collect()
+    }
+
+    pub fn get_setting(&self, key: &str) -> Option<String> {
+        self.conn()
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .ok()
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) {
+        if let Err(error) = self.conn().execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        ) {
+            eprintln!("LiteWeb: impossible d'enregistrer le réglage {key}: {error}");
+        }
+    }
+
+    pub fn set_permission(&self, origin: &str, api: &str, granted: bool) {
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn();
+        if let Err(error) = conn.execute(
+            "INSERT INTO permissions (origin, api, granted, granted_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(origin, api) DO UPDATE SET granted = excluded.granted, granted_at = excluded.granted_at",
+            params![origin, api, granted as i64, now],
+        ) {
+            eprintln!("LiteWeb: impossible d'enregistrer la permission: {error}");
+            return;
+        }
+        drop(conn);
+        if let Err(error) = self.conn().execute(
+            "DELETE FROM permissions WHERE rowid NOT IN (
+                SELECT rowid FROM permissions ORDER BY granted_at DESC, rowid DESC LIMIT 200
+            )",
+            [],
+        ) {
+            eprintln!("LiteWeb: impossible de limiter les permissions: {error}");
+        }
+    }
+
+    pub fn grant_permission(&self, origin: &str, api: &str) {
+        self.set_permission(origin, api, true);
+    }
+
+    pub fn revoke_permission(&self, origin: &str, api: &str) {
+        self.set_permission(origin, api, false);
+    }
+
+    pub fn is_permission_granted(&self, origin: &str, api: &str) -> bool {
+        self.conn()
+            .query_row(
+                "SELECT granted FROM permissions WHERE origin = ?1 AND api = ?2",
+                params![origin, api],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|granted| granted != 0)
+            .unwrap_or(false)
+    }
+
+    pub fn list_permissions(&self) -> Vec<PermissionRecord> {
+        let conn = self.conn();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT origin, api, granted, granted_at FROM permissions ORDER BY granted_at DESC, rowid DESC",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map([], |row| {
+            let granted_at: String = row.get(3)?;
+            Ok(PermissionRecord {
+                origin: row.get(0)?,
+                api: row.get(1)?,
+                granted: row.get::<_, i64>(2)? != 0,
+                granted_at: granted_at.parse().unwrap_or_else(|_| Utc::now()),
             })
         }) else {
             return Vec::new();
@@ -425,7 +527,10 @@ mod tests {
         );
 
         storage.mark_download(id, DOWNLOAD_STATUS_FAILED);
-        assert_eq!(storage.recent_downloads(5)[0].status, DOWNLOAD_STATUS_FAILED);
+        assert_eq!(
+            storage.recent_downloads(5)[0].status,
+            DOWNLOAD_STATUS_FAILED
+        );
     }
 
     #[test]
@@ -439,5 +544,39 @@ mod tests {
             );
         }
         assert_eq!(storage.recent_downloads(500).len(), 200);
+    }
+
+    #[test]
+    fn permissions_are_denied_until_granted() {
+        let storage = Storage::open_in_memory().unwrap();
+        assert!(!storage.is_permission_granted("https://example.com", "camera"));
+        storage.grant_permission("https://example.com", "camera");
+        assert!(storage.is_permission_granted("https://example.com", "camera"));
+        assert!(!storage.is_permission_granted("https://example.com", "microphone"));
+        assert!(!storage.is_permission_granted("https://other.example", "camera"));
+        storage.revoke_permission("https://example.com", "camera");
+        assert!(!storage.is_permission_granted("https://example.com", "camera"));
+    }
+
+    #[test]
+    fn permission_grants_are_unique_and_capped_at_200() {
+        let storage = Storage::open_in_memory().unwrap();
+        storage.grant_permission("https://example.com", "camera");
+        storage.grant_permission("https://example.com", "camera");
+        assert_eq!(storage.list_permissions().len(), 1);
+        for i in 0..205 {
+            storage.grant_permission(&format!("https://site-{i}.example"), "geolocation");
+        }
+        assert_eq!(storage.list_permissions().len(), 200);
+    }
+
+    #[test]
+    fn settings_are_key_value_and_overwritable() {
+        let storage = Storage::open_in_memory().unwrap();
+        assert_eq!(storage.get_setting("vpn_required"), None);
+        storage.set_setting("vpn_required", "1");
+        assert_eq!(storage.get_setting("vpn_required").as_deref(), Some("1"));
+        storage.set_setting("vpn_required", "0");
+        assert_eq!(storage.get_setting("vpn_required").as_deref(), Some("0"));
     }
 }

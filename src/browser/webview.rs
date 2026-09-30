@@ -16,6 +16,7 @@ use crate::adblock::Blocker;
 use crate::commands::should_allow_navigation;
 use crate::energy::WebViewPolicy;
 use crate::privacy::{harden_settings, PrivacyPolicy};
+use crate::storage::Storage;
 
 pub const ARCHAIC_STYLESHEET: &str = r#"
 html, body { background: #f4f1e8 !important; color: #1a1a1a !important; overflow-y: auto !important; height: auto !important; }
@@ -95,11 +96,59 @@ pub fn set_archaic_stylesheet(content: &UserContentManager, enabled: bool) {
     }
 }
 
+fn permission_api_name(request: &webkit2gtk::PermissionRequest) -> &'static str {
+    use webkit2gtk::{
+        GeolocationPermissionRequest, InstallMissingMediaPluginsPermissionRequest,
+        MediaKeySystemPermissionRequest, NotificationPermissionRequest,
+        PointerLockPermissionRequest, UserMediaPermissionRequest,
+        WebsiteDataAccessPermissionRequest,
+    };
+    if request
+        .dynamic_cast_ref::<GeolocationPermissionRequest>()
+        .is_some()
+    {
+        "geolocation"
+    } else if request
+        .dynamic_cast_ref::<NotificationPermissionRequest>()
+        .is_some()
+    {
+        "notification"
+    } else if request
+        .dynamic_cast_ref::<UserMediaPermissionRequest>()
+        .is_some()
+    {
+        "camera"
+    } else if request
+        .dynamic_cast_ref::<MediaKeySystemPermissionRequest>()
+        .is_some()
+    {
+        "encrypted-media"
+    } else if request
+        .dynamic_cast_ref::<PointerLockPermissionRequest>()
+        .is_some()
+    {
+        "pointer-lock"
+    } else if request
+        .dynamic_cast_ref::<WebsiteDataAccessPermissionRequest>()
+        .is_some()
+    {
+        "storage-access"
+    } else if request
+        .dynamic_cast_ref::<InstallMissingMediaPluginsPermissionRequest>()
+        .is_some()
+    {
+        "media-plugins"
+    } else {
+        "unknown"
+    }
+}
+
 #[allow(deprecated)]
 pub fn create_webview(
     context: &WebContext,
     blocker: Rc<Blocker>,
     privacy: &PrivacyPolicy,
+    storage: Storage,
     content: &UserContentManager,
     policy: WebViewPolicy,
     on_new_tab: NewTabHandler,
@@ -132,7 +181,23 @@ pub fn create_webview(
         settings.set_enable_xss_auditor(true);
     }
 
-    webview.connect_permission_request(|_, request| {
+    let storage_permissions = storage.clone();
+    webview.connect_permission_request(move |view, request| {
+        // Jamais de prompt WebKit : on refuse toujours. Le registre ne fait
+        // que tracer l'intention de l'utilisateur.
+        let origin = view
+            .uri()
+            .and_then(|uri| crate::privacy::permission_origin(&uri));
+        let api = permission_api_name(request);
+        let granted = origin
+            .as_deref()
+            .is_some_and(|origin| storage_permissions.is_permission_granted(origin, api));
+        if granted {
+            eprintln!(
+                "LiteWeb: permission « {api} » enregistrée pour {} — refusée quand même (pas de prompt WebKit)",
+                origin.unwrap_or_default()
+            );
+        }
         request.deny();
         true
     });
