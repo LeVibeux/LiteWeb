@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod cookies;
+pub mod fingerprint;
 pub mod headers;
 pub mod permissions;
 pub mod settings;
@@ -13,6 +14,7 @@ pub use cookies::{
     should_delete_cookie, site_origin, SiteSandbox, SiteSandboxRegistry, PURGE_TICK,
     SANDBOX_IDLE_LIMIT,
 };
+pub use fingerprint::{fingerprint_script, inject_fingerprint, FINGERPRINT_WORLD};
 pub use headers::{
     apply_referer_policy, harden_outgoing_request, harden_request_headers, referer_policy,
     STRIPPED_CLIENT_HINTS,

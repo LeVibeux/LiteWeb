@@ -108,6 +108,7 @@ impl BrowserWindow {
             ),
         ));
         let user_content = create_user_content_manager();
+        crate::privacy::inject_fingerprint(&user_content);
 
         let window = ApplicationWindow::builder()
             .application(app)
