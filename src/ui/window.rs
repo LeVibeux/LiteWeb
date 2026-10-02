@@ -13,8 +13,8 @@ use gtk::{
 };
 use pango::EllipsizeMode;
 use webkit2gtk::{
-    Download, DownloadExt, LoadEvent, URIRequestExt, UserContentManager, WebContextExt,
-    WebResourceExt, WebView, WebViewExt,
+    Download, DownloadExt, LoadEvent, SettingsExt, URIRequestExt, UserContentManager,
+    UserContentManagerExt, WebContextExt, WebResourceExt, WebView, WebViewExt,
 };
 
 const KEYBAR_NORMAL: &str =
@@ -22,7 +22,7 @@ const KEYBAR_NORMAL: &str =
 const KEYBAR_URL: &str =
     "Entrée → naviguer  |  Ctrl+L focus  |  : → barre commande  |  Échap → annuler";
 const KEYBAR_COMMAND: &str =
-    ":open :tab new|close|next|prev|N :suspend :suspend-all :eco on|off|aggressive|ultra :bookmark :history :download  |  Entrée → exécuter  |  Échap → annuler";
+    ":open :tab new|close|next|prev|N :suspend :suspend-all :eco on|off|aggressive|ultra :bookmark :history :download :privacy on|off :vpn on|off  |  Entrée → exécuter  |  Échap → annuler";
 const LOGO_BYTES: &[u8] = include_bytes!("../../assets/liteweb-logo-grok.jpg");
 
 use crate::adblock::Blocker;
@@ -71,6 +71,8 @@ struct AppState {
     storage: Storage,
     energy: EnergyManager,
     blocker: Rc<Blocker>,
+    privacy: crate::privacy::PrivacyPolicy,
+    sandboxes: std::rc::Rc<std::cell::RefCell<crate::privacy::SiteSandboxRegistry>>,
     web_context: webkit2gtk::WebContext,
     user_content: UserContentManager,
     notebook: Notebook,
@@ -97,8 +99,36 @@ impl BrowserWindow {
     pub fn new(app: &Application, benchmark: Option<BenchmarkConfig>) -> Self {
         let blocker = Rc::new(Blocker::new());
         let storage = Storage::open();
-        let web_context = create_web_context();
+        let stored_mode = storage.get_setting("privacy_mode").unwrap_or_default();
+        let startup_mode = crate::privacy::PrivacyMode::parse(&stored_mode)
+            .unwrap_or(crate::privacy::PrivacyMode::Off);
+        // `Rotate` sans NordVPN retombe sur `Blend` : mieux vaut un profil
+        // cohérent qu'une empreinte neuve derrière l'IP réelle.
+        let startup_mode = if startup_mode == crate::privacy::PrivacyMode::Rotate
+            && !crate::privacy::nordvpn_connected()
+        {
+            crate::privacy::PrivacyMode::Blend
+        } else {
+            startup_mode
+        };
+        let privacy_on = startup_mode != crate::privacy::PrivacyMode::Off;
+        let vpn_on = storage.get_setting("vpn_required").as_deref() == Some("1");
+        let web_context = if privacy_on {
+            crate::privacy::create_private_web_context()
+        } else {
+            create_web_context()
+        };
+        let privacy = crate::privacy::PrivacyPolicy::new(privacy_on, vpn_on);
+        let _ = privacy.set_mode(startup_mode);
+        let sandboxes = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::privacy::SiteSandboxRegistry::new(
+                crate::privacy::SiteSandboxRegistry::default_root(),
+            ),
+        ));
         let user_content = create_user_content_manager();
+        if privacy_on {
+            crate::privacy::inject_fingerprint(&user_content);
+        }
 
         let window = ApplicationWindow::builder()
             .application(app)
@@ -166,6 +196,8 @@ impl BrowserWindow {
             storage,
             energy,
             blocker: blocker.clone(),
+            privacy,
+            sandboxes,
             web_context,
             user_content,
             notebook: notebook.clone(),
@@ -187,6 +219,8 @@ impl BrowserWindow {
         Self::activate_benchmark_sentinel(state.clone());
         Self::warn_if_sandbox_unavailable(state.clone());
         Self::start_energy_timer(state.clone());
+        Self::start_privacy_timer(state.clone());
+        Self::start_vpn_timer(state.clone());
         Self::start_benchmark_timer(state.clone(), app.clone());
 
         Self { window, state }
@@ -282,7 +316,8 @@ impl BrowserWindow {
         prompt.set_width_chars(1);
 
         let command_entry = Entry::new();
-        command_entry.set_placeholder_text(Some("open example.com  |  tab new [url]  |  tab close [n]"));
+        command_entry
+            .set_placeholder_text(Some("open example.com  |  tab new [url]  |  tab close [n]"));
         command_entry.set_hexpand(true);
         command_entry
             .style_context()
@@ -673,6 +708,7 @@ impl BrowserWindow {
             let mut st = state.borrow_mut();
             let web_context = st.web_context.clone();
             let blocker = st.blocker.clone();
+            let privacy = st.privacy.clone();
             let user_content = st.user_content.clone();
             let policy = st.energy.level().webview_policy();
             let storage = st.storage.clone();
@@ -686,6 +722,8 @@ impl BrowserWindow {
                 let wv = create_webview(
                     &web_context,
                     blocker.clone(),
+                    &privacy,
+                    storage.clone(),
                     &user_content,
                     policy,
                     on_new_tab.clone(),
@@ -705,6 +743,7 @@ impl BrowserWindow {
             let active = st.tabs.active_index();
             let web_context = st.web_context.clone();
             let blocker = st.blocker.clone();
+            let privacy = st.privacy.clone();
             let user_content = st.user_content.clone();
             let policy = st.energy.level().webview_policy();
             let storage = st.storage.clone();
@@ -754,6 +793,8 @@ impl BrowserWindow {
                         let wv = create_webview(
                             &web_context,
                             blocker.clone(),
+                            &privacy,
+                            storage.clone(),
                             &user_content,
                             policy,
                             on_new_tab.clone(),
@@ -932,6 +973,14 @@ impl BrowserWindow {
             Self::show_message(
                 "Navigation refusée",
                 "LiteWeb autorise uniquement HTTP, HTTPS et about:blank.",
+            );
+            return;
+        }
+
+        if !state.borrow().privacy.kill_switch.allow_navigation(&url) {
+            Self::show_message(
+                crate::privacy::MSG_VPN_BLOCKED_TITLE,
+                crate::privacy::MSG_VPN_BLOCKED_BODY,
             );
             return;
         }
@@ -1262,10 +1311,7 @@ impl BrowserWindow {
                 if n < count {
                     Self::close_tab_at(state_cmd.clone(), n);
                 } else {
-                    Self::show_message(
-                        "Onglet inexistant",
-                        &format!("Aucun onglet n°{}.", n + 1),
-                    );
+                    Self::show_message("Onglet inexistant", &format!("Aucun onglet n°{}.", n + 1));
                 }
             }
             CommandAction::Suspend => {
@@ -1304,11 +1350,127 @@ impl BrowserWindow {
             CommandAction::BookmarkList => Self::show_bookmarks(state_cmd.clone()),
             CommandAction::History => Self::show_history(state_cmd.clone()),
             CommandAction::DownloadList => Self::show_downloads(state_cmd.clone()),
+            CommandAction::PrivacyStatus => Self::show_privacy_status(state_cmd.clone()),
+            CommandAction::PrivacyMode(mode) => Self::set_privacy_mode(state_cmd.clone(), mode),
+            CommandAction::VpnStatus => Self::show_vpn_status(state_cmd.clone()),
+            CommandAction::VpnSet(required) => Self::set_vpn_packet(state_cmd.clone(), required),
             CommandAction::Unknown(cmd) => {
                 Self::show_message("Commande inconnue", &format!("'{cmd}' n'est pas reconnue."));
             }
         }
         state.borrow().command_entry.set_text("");
+    }
+
+    fn show_privacy_status(state: Rc<RefCell<AppState>>) {
+        let mode = state.borrow().privacy.mode();
+        let text = match mode {
+            crate::privacy::PrivacyMode::Off => {
+                "Paquet privé : inactif.\n\n\
+                 :privacy blend — profil Chrome courant, cohérent.\n\
+                 :privacy vide — retire canvas, WebGL, fontes, permissions.\n\
+                 :privacy rotate — profil tiré par session, NordVPN requis."
+            }
+            crate::privacy::PrivacyMode::Blend => {
+                "Mode blend : profil Chrome/Linux figé.\n\
+                 UA, en-têtes, langue, écran et timezone alignés.\n\
+                 :privacy off pour revenir au navigateur normal."
+            }
+            crate::privacy::PrivacyMode::Blank => {
+                "Mode vide : canvas bruité, WebGL masqué, fontes neutralisées,\n\
+                 permissions en denied. L'empreinte est rare par construction.\n\
+                 :privacy off pour revenir au navigateur normal."
+            }
+            crate::privacy::PrivacyMode::Rotate => {
+                "Mode rotate : profil tiré pour cette session, NordVPN connecté.\n\
+                 :privacy rotate à nouveau pour tirer un autre profil et changer d'IP."
+            }
+        };
+        Self::show_message("Confidentialité", text);
+    }
+
+    fn set_privacy_mode(state: Rc<RefCell<AppState>>, mode: crate::privacy::PrivacyMode) {
+        if mode == crate::privacy::PrivacyMode::Rotate {
+            // La rotation d'IP bloque plusieurs secondes. On la lance avant de
+            // toucher au profil : si elle échoue, on ne change rien.
+            if let Err(error) = crate::privacy::nordvpn_rotate() {
+                Self::show_message(
+                    "Confidentialité",
+                    &format!(
+                        "Rotation NordVPN impossible : {error}\nLe mode rotate reste inactif."
+                    ),
+                );
+                return;
+            }
+        }
+        let accepted = state.borrow().privacy.set_mode(mode);
+        if !accepted {
+            Self::show_message(
+                "Confidentialité",
+                "Mode rotate refusé : NordVPN n'est pas connecté.\n\
+                 Connecte NordVPN, puis relance :privacy rotate.",
+            );
+            return;
+        }
+        {
+            let st = state.borrow();
+            st.storage.set_setting("privacy_mode", mode.as_str());
+            if mode == crate::privacy::PrivacyMode::Off {
+                st.user_content.remove_all_scripts();
+            } else {
+                crate::privacy::inject_fingerprint(&st.user_content);
+            }
+        }
+        let enabled = mode != crate::privacy::PrivacyMode::Off;
+        let webviews: Vec<webkit2gtk::WebView> = state
+            .borrow()
+            .tabs
+            .tabs()
+            .iter()
+            .filter_map(|tab| tab.webview.clone())
+            .collect();
+        for webview in webviews {
+            if let Some(settings) = WebViewExt::settings(&webview) {
+                if enabled {
+                    crate::privacy::harden_settings(&settings);
+                } else {
+                    settings.set_user_agent(None);
+                }
+            }
+        }
+        let text = match mode {
+            crate::privacy::PrivacyMode::Off => "Paquet privé désactivé.",
+            crate::privacy::PrivacyMode::Blend => "Mode blend activé. Recharge les onglets.",
+            crate::privacy::PrivacyMode::Blank => "Mode vide activé. Recharge les onglets.",
+            crate::privacy::PrivacyMode::Rotate => {
+                "Mode rotate activé. IP tournée, profil tiré pour cette session."
+            }
+        };
+        Self::show_message("Confidentialité", text);
+    }
+
+    fn show_vpn_status(state: Rc<RefCell<AppState>>) {
+        let text = state.borrow().privacy.kill_switch.describe();
+        Self::show_message("VPN", &text);
+    }
+
+    fn set_vpn_packet(state: Rc<RefCell<AppState>>, required: bool) {
+        {
+            let st = state.borrow();
+            st.privacy.kill_switch.set_required(required);
+            st.storage
+                .set_setting("vpn_required", if required { "1" } else { "0" });
+        }
+        let connected = crate::privacy::detect_vpn().connected;
+        let text = if required && !connected {
+            "Kill-switch VPN activé.\n\
+             La navigation publique est bloquée tant qu'aucun VPN n'est connecté.\n\
+             localhost et le réseau local restent autorisés."
+        } else if required {
+            "Kill-switch VPN activé. Un VPN est détecté."
+        } else {
+            "Kill-switch VPN désactivé. La navigation ne dépend plus du VPN."
+        };
+        Self::show_message("VPN", text);
     }
 
     fn show_bookmarks(state: Rc<RefCell<AppState>>) {
@@ -1389,6 +1551,64 @@ impl BrowserWindow {
         dialog.set_title(title);
         dialog.connect_response(|d, _| d.close());
         dialog.show_all();
+    }
+
+    fn start_vpn_timer(state: Rc<RefCell<AppState>>) {
+        glib::timeout_add_local(crate::privacy::VPN_RECHECK_TICK, move || {
+            let required = state.borrow().privacy.kill_switch.is_required();
+            if !required {
+                return glib::Continue(true);
+            }
+            if crate::privacy::detect_vpn().connected {
+                return glib::Continue(true);
+            }
+            let views: Vec<webkit2gtk::WebView> = {
+                let st = state.borrow();
+                st.tabs
+                    .tabs()
+                    .iter()
+                    .filter_map(|tab| tab.webview.clone())
+                    .collect()
+            };
+            for view in views {
+                if view.uri().as_deref() != Some(crate::privacy::VPN_LOST_URI) {
+                    view.stop_loading();
+                    view.load_uri(crate::privacy::VPN_LOST_URI);
+                }
+            }
+            glib::Continue(true)
+        });
+    }
+
+    fn start_privacy_timer(state: Rc<RefCell<AppState>>) {
+        glib::timeout_add_local(crate::privacy::PURGE_TICK, move || {
+            let now = chrono::Utc::now();
+            if !state.borrow().privacy.is_enabled() {
+                return glib::Continue(true);
+            }
+            let expired = {
+                let st = state.borrow();
+                let sandboxes = st.sandboxes.borrow();
+                let result = sandboxes.purgeable(now, crate::privacy::SANDBOX_IDLE_LIMIT);
+                drop(sandboxes);
+                drop(st);
+                result
+            };
+            if expired.is_empty() {
+                return glib::Continue(true);
+            }
+            let context = state.borrow().web_context.clone();
+            let origins: Vec<String> = expired.iter().map(|s| s.origin.clone()).collect();
+            let registry = state.borrow().sandboxes.clone();
+            let purged = crate::privacy::purge_expired_sandboxes(&context, &expired);
+            if purged > 0 {
+                let mut reg = registry.borrow_mut();
+                for origin in origins {
+                    reg.forget(&origin);
+                }
+            }
+            glib::Continue(true)
+        });
     }
 
     fn start_energy_timer(state: Rc<RefCell<AppState>>) {

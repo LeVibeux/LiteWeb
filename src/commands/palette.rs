@@ -16,6 +16,10 @@ pub enum CommandAction {
     BookmarkList,
     History,
     DownloadList,
+    PrivacyStatus,
+    PrivacyMode(crate::privacy::PrivacyMode),
+    VpnStatus,
+    VpnSet(bool),
     Unknown(String),
 }
 
@@ -85,6 +89,27 @@ impl CommandPalette {
             },
             "history" | "h" => CommandAction::History,
             "download" | "dl" => CommandAction::DownloadList,
+            "privacy" => match arg.to_lowercase().as_str() {
+                "" | "status" => CommandAction::PrivacyStatus,
+                other => match crate::privacy::PrivacyMode::parse(other) {
+                    Some(mode) => CommandAction::PrivacyMode(mode),
+                    None => CommandAction::Unknown(cmd.to_string()),
+                },
+            },
+            "vpn" => {
+                let mut words = arg.split_whitespace();
+                match words.next().unwrap_or("status").to_lowercase().as_str() {
+                    "" | "status" => CommandAction::VpnStatus,
+                    "on" => CommandAction::VpnSet(true),
+                    "off" => CommandAction::VpnSet(false),
+                    "require" => match words.next().unwrap_or("").to_lowercase().as_str() {
+                        "on" => CommandAction::VpnSet(true),
+                        "off" => CommandAction::VpnSet(false),
+                        _ => CommandAction::Unknown(cmd.to_string()),
+                    },
+                    _ => CommandAction::Unknown(cmd.to_string()),
+                }
+            }
             _ => CommandAction::Unknown(cmd.to_string()),
         }
     }
@@ -374,5 +399,46 @@ mod tests {
         assert!(!shown.chars().any(is_bidi_control));
         assert!(shown.contains("Banque"));
         assert!(shown.contains("evil"));
+    }
+
+    #[test]
+    fn parses_privacy_and_vpn_packets() {
+        assert_eq!(
+            CommandPalette::parse(":privacy"),
+            CommandAction::PrivacyStatus
+        );
+        assert_eq!(
+            CommandPalette::parse(":privacy on"),
+            CommandAction::PrivacyMode(crate::privacy::PrivacyMode::Blend)
+        );
+        assert_eq!(
+            CommandPalette::parse(":privacy vide"),
+            CommandAction::PrivacyMode(crate::privacy::PrivacyMode::Blank)
+        );
+        assert_eq!(
+            CommandPalette::parse(":privacy rotate"),
+            CommandAction::PrivacyMode(crate::privacy::PrivacyMode::Rotate)
+        );
+        assert_eq!(
+            CommandPalette::parse(":privacy off"),
+            CommandAction::PrivacyMode(crate::privacy::PrivacyMode::Off)
+        );
+        assert_eq!(CommandPalette::parse(":vpn"), CommandAction::VpnStatus);
+        assert_eq!(
+            CommandPalette::parse(":vpn on"),
+            CommandAction::VpnSet(true)
+        );
+        assert_eq!(
+            CommandPalette::parse(":vpn off"),
+            CommandAction::VpnSet(false)
+        );
+        assert_eq!(
+            CommandPalette::parse(":vpn require on"),
+            CommandAction::VpnSet(true)
+        );
+        match CommandPalette::parse(":privacy maybe") {
+            CommandAction::Unknown(_) => {}
+            other => panic!("attendu Unknown, obtenu {other:?}"),
+        }
     }
 }

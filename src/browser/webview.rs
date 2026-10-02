@@ -15,6 +15,8 @@ use webkit2gtk::{
 use crate::adblock::Blocker;
 use crate::commands::should_allow_navigation;
 use crate::energy::WebViewPolicy;
+use crate::privacy::{harden_settings, PrivacyPolicy};
+use crate::storage::Storage;
 
 pub const ARCHAIC_STYLESHEET: &str = r#"
 html, body { background: #f4f1e8 !important; color: #1a1a1a !important; overflow-y: auto !important; height: auto !important; }
@@ -94,15 +96,69 @@ pub fn set_archaic_stylesheet(content: &UserContentManager, enabled: bool) {
     }
 }
 
+fn permission_api_name(request: &webkit2gtk::PermissionRequest) -> &'static str {
+    use webkit2gtk::{
+        GeolocationPermissionRequest, InstallMissingMediaPluginsPermissionRequest,
+        MediaKeySystemPermissionRequest, NotificationPermissionRequest,
+        PointerLockPermissionRequest, UserMediaPermissionRequest,
+        WebsiteDataAccessPermissionRequest,
+    };
+    if request
+        .dynamic_cast_ref::<GeolocationPermissionRequest>()
+        .is_some()
+    {
+        "geolocation"
+    } else if request
+        .dynamic_cast_ref::<NotificationPermissionRequest>()
+        .is_some()
+    {
+        "notification"
+    } else if request
+        .dynamic_cast_ref::<UserMediaPermissionRequest>()
+        .is_some()
+    {
+        "camera"
+    } else if request
+        .dynamic_cast_ref::<MediaKeySystemPermissionRequest>()
+        .is_some()
+    {
+        "encrypted-media"
+    } else if request
+        .dynamic_cast_ref::<PointerLockPermissionRequest>()
+        .is_some()
+    {
+        "pointer-lock"
+    } else if request
+        .dynamic_cast_ref::<WebsiteDataAccessPermissionRequest>()
+        .is_some()
+    {
+        "storage-access"
+    } else if request
+        .dynamic_cast_ref::<InstallMissingMediaPluginsPermissionRequest>()
+        .is_some()
+    {
+        "media-plugins"
+    } else {
+        "unknown"
+    }
+}
+
 #[allow(deprecated)]
 pub fn create_webview(
     context: &WebContext,
     blocker: Rc<Blocker>,
+    privacy: &PrivacyPolicy,
+    storage: Storage,
     content: &UserContentManager,
     policy: WebViewPolicy,
     on_new_tab: NewTabHandler,
 ) -> WebView {
     let webview = WebView::new_with_context_and_user_content_manager(context, content);
+    if let Some(settings) = webview.settings() {
+        if privacy.is_enabled() {
+            harden_settings(&settings);
+        }
+    }
     apply_webview_policy(&webview, policy);
 
     if let Some(settings) = webview.settings() {
@@ -127,7 +183,23 @@ pub fn create_webview(
         settings.set_enable_xss_auditor(true);
     }
 
-    webview.connect_permission_request(|_, request| {
+    let storage_permissions = storage.clone();
+    webview.connect_permission_request(move |view, request| {
+        // Jamais de prompt WebKit : on refuse toujours. Le registre ne fait
+        // que tracer l'intention de l'utilisateur.
+        let origin = view
+            .uri()
+            .and_then(|uri| crate::privacy::permission_origin(&uri));
+        let api = permission_api_name(request);
+        let granted = origin
+            .as_deref()
+            .is_some_and(|origin| storage_permissions.is_permission_granted(origin, api));
+        if granted {
+            eprintln!(
+                "LiteWeb: permission « {api} » enregistrée pour {} — refusée quand même (pas de prompt WebKit)",
+                origin.unwrap_or_default()
+            );
+        }
         request.deny();
         true
     });
@@ -146,8 +218,11 @@ pub fn create_webview(
         true
     });
 
-    let blocker_policy = blocker.clone();
+    let privacy_policy = privacy.clone();
     webview.connect_decide_policy(move |_view, decision, decision_type| {
+        let tracker = privacy_policy.tracker.clone();
+        let is_blocked =
+            |candidate: &str| blocker.check(candidate) || tracker.is_blocked(candidate);
         match decision_type {
             PolicyDecisionType::NavigationAction => {
                 let uri = decision
@@ -155,9 +230,7 @@ pub fn create_webview(
                     .and_then(|d| d.navigation_action())
                     .and_then(|action| action.request())
                     .and_then(|r| r.uri());
-                if should_allow_navigation(uri.as_deref(), |candidate| {
-                    blocker_policy.check(candidate)
-                }) {
+                if privacy_policy.navigation_allowed(uri.as_deref(), &is_blocked) {
                     false
                 } else {
                     decision.ignore();
@@ -171,9 +244,7 @@ pub fn create_webview(
                     .and_then(|d| d.navigation_action())
                     .and_then(|action| action.request())
                     .and_then(|r| r.uri());
-                if should_allow_navigation(uri.as_deref(), |candidate| {
-                    blocker_policy.check(candidate)
-                }) {
+                if privacy_policy.navigation_allowed(uri.as_deref(), &is_blocked) {
                     if let Some(uri) = uri {
                         let on_new_tab = on_new_tab.clone();
                         let url = uri.to_string();
@@ -189,9 +260,7 @@ pub fn create_webview(
                     return true;
                 };
                 let uri = response.request().and_then(|request| request.uri());
-                if !should_allow_navigation(uri.as_deref(), |candidate| {
-                    blocker_policy.check(candidate)
-                }) {
+                if !privacy_policy.navigation_allowed(uri.as_deref(), &is_blocked) {
                     decision.ignore();
                     return true;
                 }
@@ -208,13 +277,21 @@ pub fn create_webview(
         }
     });
 
+    // En-têtes sortants : DNT, Accept-Language figé, Referer réduit/supprimé,
+    // tous les Sec-CH-* strippés. `view.uri()` est la page first-party.
+    let privacy_headers = privacy.clone();
+    webview.connect_resource_load_started(move |view, _resource, request| {
+        if !privacy_headers.is_enabled() {
+            return;
+        }
+        let page_uri = view.uri();
+        crate::privacy::harden_outgoing_request(request, page_uri.as_deref());
+    });
+
     webview
 }
 
-/// NOTE téléchargements : aucun handler `download-started` n'est connecté ici.
-/// `BrowserWindow::wire_downloads` DOIT être connecté avant le premier
-/// chargement (avant `render_tabs`), sinon le handler par défaut de WebKit
-/// écrirait dans le dossier XDG sans confirmation.
+/// Contexte WebKit standard (paquet privé off).
 #[allow(deprecated)]
 pub fn create_web_context() -> WebContext {
     let data_manager = private_data_manager();
@@ -230,6 +307,9 @@ pub fn create_web_context() -> WebContext {
     context
 }
 
+// TODO(privacy-task2): retirer après migration complète vers privacy::settings.
+// Les tests existants dans ce fichier référencent encore ces helpers.
+#[allow(dead_code)]
 fn private_data_manager() -> WebsiteDataManager {
     let data_dir = dirs::data_dir().map(|path| path.join("liteweb").join("webkit"));
     let cache_dir = dirs::cache_dir().map(|path| path.join("liteweb").join("webkit"));

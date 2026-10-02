@@ -6,7 +6,7 @@
 
 Navigateur web léger pour Linux, optimisé pour la consommation de processeur, de mémoire et d'énergie.
 
-> **Preview (v0.1).** Linux + WebKit système uniquement. Ce n'est pas un remplacement de Firefox/Chrome : pas de téléchargements, le filtre ne s'applique qu'aux navigations, et les sites qui exigent HTTP Basic ou beaucoup de popups casseront. À utiliser comme lecteur léger / navigateur économe.
+> **Preview (v0.1.1).** Linux + WebKit système uniquement. Ce n'est pas un remplacement de Firefox/Chrome : le filtrage n'est pas complet et les sites qui exigent HTTP Basic ou beaucoup de popups peuvent casser. À utiliser comme lecteur léger / navigateur économe.
 
 ## Fonctionnalités
 
@@ -15,6 +15,8 @@ Navigateur web léger pour Linux, optimisé pour la consommation de processeur, 
 - Modes économie d'énergie (Normal / Éco / Agressif / Ultra) avec suspension automatique des onglets inactifs
 - Historique et favoris dans une base SQLite locale
 - Raccourcis clavier et palette de commandes (`:`)
+- Téléchargements avec dialogue de sauvegarde explicite (`:download` les liste)
+- Durcissement privé et contrôle VPN optionnels, désactivés par défaut
 
 ## Prérequis (Linux)
 
@@ -41,7 +43,7 @@ Données utilisateur : `~/.config/liteweb/liteweb.db`
 ## Sécurité
 
 - Navigation limitée à `http://`, `https://` et `about:blank` ; les schémas locaux ou actifs (`file:`, `data:`, `javascript:`) sont refusés. Une URI absente ou illisible est refusée.
-- Les popups (`target=_blank`, `window.open`) ne créent jamais de WebView hors politique. Une URL autorisée s'ouvre dans un onglet LiteWeb ; le reste est ignoré. Les téléchargements et l'authentification HTTP Basic sont annulés tant que ces fonctions n'existent pas.
+- Les popups (`target=_blank`, `window.open`) ne créent jamais de WebView hors politique. Une URL autorisée s'ouvre dans un onglet LiteWeb ; le reste est ignoré. Les téléchargements exigent un dialogue de sauvegarde explicite ; l'authentification HTTP Basic reste annulée.
 - Les permissions Web (caméra, microphone, géolocalisation, notifications) et les sélecteurs de fichiers sont refusés par défaut. Le plein écran est désactivé pour qu'une page ne puisse pas recouvrir la barre d'adresse.
 - La sandbox WebKit est activée, les erreurs TLS bloquent le chargement, l'automatisation distante est désactivée et les cookies tiers sont refusés.
 - La barre d'adresse se met à jour sur l'URL validée (pas seulement à la fin du chargement), affiche le punycode des hôtes IDN et retire les contrôles bidi. Les pages Ultra sont aplaties et servies avec une CSP stricte.
@@ -77,7 +79,12 @@ Le filtre intégré agit sur les navigations. Il ne remplace pas un bloqueur com
 :eco on|off|aggressive|ultra
 :bookmark list
 :history
+:download
+:privacy blend|vide|rotate|off
+:vpn on|off
 ```
+
+Statut privé et VPN : `:privacy` et `:vpn`. Relancer après la première activation du mode privé pour utiliser le contexte de cookies séparé. Les commandes `vide` et `rotate` sont expérimentales : leurs profils distincts ne sont pas encore appliqués à tous les chemins JS/en-têtes/settings. Ne pas compter sur elles pour l'anonymat ou un changement d'IP garanti. WebKit reste identifiable. La détection VPN contrôle un tunnel activé et la route effective IPv4 ; ce n'est ni un firewall système ni une garantie contre les fuites IPv6.
 
 ## Modes énergie
 
