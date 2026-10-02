@@ -94,8 +94,14 @@ mod tests {
     #[test]
     fn empty_dots_and_slashes_fall_back() {
         assert_eq!(sanitize_download_filename(""), FALLBACK_DOWNLOAD_FILENAME);
-        assert_eq!(sanitize_download_filename("..."), FALLBACK_DOWNLOAD_FILENAME);
-        assert_eq!(sanitize_download_filename("///"), FALLBACK_DOWNLOAD_FILENAME);
+        assert_eq!(
+            sanitize_download_filename("..."),
+            FALLBACK_DOWNLOAD_FILENAME
+        );
+        assert_eq!(
+            sanitize_download_filename("///"),
+            FALLBACK_DOWNLOAD_FILENAME
+        );
     }
 
     #[test]

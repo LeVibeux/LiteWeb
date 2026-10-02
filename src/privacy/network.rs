@@ -34,14 +34,18 @@ impl VpnStatus {
 }
 
 pub fn detect_vpn() -> VpnStatus {
-    let up = vpn_interfaces_up(Path::new("/sys"));
-    let interface = up.into_iter().next();
+    detect_vpn_with_route(Path::new("/sys"), default_route_interface())
+}
+
+fn detect_vpn_with_route(sys_root: &Path, route: Option<String>) -> VpnStatus {
+    let up = vpn_interfaces_up(sys_root);
+    let interface = route.as_ref().filter(|name| up.contains(name)).cloned();
     let provider = interface.as_deref().and_then(provider_for_interface);
     VpnStatus {
         connected: interface.is_some(),
         interface,
         provider,
-        default_route_interface: default_route_interface(),
+        default_route_interface: route,
     }
 }
 
@@ -59,12 +63,20 @@ pub fn interface_is_up(sys_root: &Path, name: &str) -> bool {
     let dir = sys_root.join("class").join("net").join(name);
     let operstate = read_trimmed(&dir.join("operstate"));
     let carrier = read_trimmed(&dir.join("carrier"));
-    operstate.as_deref() == Some("up") && carrier.as_deref() == Some("1")
+    let administratively_up = read_trimmed(&dir.join("flags"))
+        .and_then(|flags| u32::from_str_radix(flags.trim_start_matches("0x"), 16).ok())
+        .is_some_and(|flags| flags & 1 != 0);
+    // WireGuard/NordLynx expose "unknown" even when the tunnel is up.
+    administratively_up
+        && matches!(operstate.as_deref(), Some("up" | "unknown"))
+        && carrier.as_deref() == Some("1")
 }
 
 pub fn default_route_interface() -> Option<String> {
+    // A route lookup includes policy routing (NordVPN uses a separate table).
+    // This asks the kernel only: no packet is sent to the probe address.
     let output = std::process::Command::new("ip")
-        .args(["route", "show", "default"])
+        .args(["-4", "route", "get", "1.1.1.1"])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -96,6 +108,28 @@ pub fn provider_for_interface(interface: &str) -> Option<String> {
         _ => return None,
     };
     Some(label.to_string())
+}
+
+/// NordVPN est-il le VPN actif ? Le mode aléatoire refuse de tourner sinon :
+/// une empreinte neuve derrière la même IP se relie à la session précédente.
+pub fn nordvpn_connected() -> bool {
+    detect_vpn().interface.as_deref() == Some("nordlynx")
+}
+
+/// Demande à NordVPN un nouveau serveur. `nordvpn connect` sans argument
+/// prend le serveur recommandé, donc une IP différente. Bloquant : à appeler
+/// hors du thread GTK, ou assumer la latence.
+pub fn nordvpn_rotate() -> Result<(), String> {
+    let output = std::process::Command::new("nordvpn")
+        .args(["connect"])
+        .output()
+        .map_err(|error| format!("nordvpn introuvable: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("nordvpn connect a échoué: {stderr}"))
+    }
 }
 
 pub fn is_internal_host(host: &str) -> bool {
@@ -266,6 +300,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("operstate"), operstate).unwrap();
         fs::write(dir.join("carrier"), carrier).unwrap();
+        fs::write(dir.join("flags"), "0x1\n").unwrap();
     }
 
     #[test]
@@ -303,9 +338,20 @@ mod tests {
         fake_interface(&root, "nordlynx", "up", "0");
         assert!(vpn_interfaces_up(&root).is_empty());
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn detects_administratively_up_nordlynx_with_unknown_operstate() {
         let root = unique_root("unknown");
         fake_interface(&root, "nordlynx", "unknown", "1");
-        assert!(vpn_interfaces_up(&root).is_empty(), "fail closed");
+        assert!(vpn_interfaces_up(&root).contains(&"nordlynx".to_string()));
+        fs::write(root.join("class/net/nordlynx/flags"), "0x0").unwrap();
+        assert!(vpn_interfaces_up(&root).is_empty(), "administratively down");
+        fs::remove_file(root.join("class/net/nordlynx/flags")).unwrap();
+        assert!(
+            vpn_interfaces_up(&root).is_empty(),
+            "missing flags fail closed"
+        );
         fs::remove_dir_all(&root).ok();
     }
 
@@ -313,6 +359,28 @@ mod tests {
     fn missing_sys_root_is_not_connected() {
         let root = unique_root("absent");
         assert!(vpn_interfaces_up(&root).is_empty());
+    }
+
+    #[test]
+    fn vpn_detection_requires_effective_route_through_the_tunnel() {
+        let root = unique_root("routing");
+        fake_interface(&root, "nordlynx", "unknown", "1");
+        fake_interface(&root, "tun0", "up", "1");
+        let nord = detect_vpn_with_route(&root, Some("nordlynx".into()));
+        assert!(nord.connected);
+        assert_eq!(nord.interface.as_deref(), Some("nordlynx"));
+        let other = detect_vpn_with_route(&root, Some("tun0".into()));
+        assert_eq!(other.interface.as_deref(), Some("tun0"));
+        let bypass = detect_vpn_with_route(&root, Some("wlan0".into()));
+        assert!(
+            !bypass.connected,
+            "an idle tunnel must not allow public navigation"
+        );
+        assert_eq!(bypass.default_route_interface.as_deref(), Some("wlan0"));
+        assert!(!detect_vpn_with_route(&root, None).connected);
+        fs::write(root.join("class/net/nordlynx/carrier"), "0").unwrap();
+        assert!(!detect_vpn_with_route(&root, Some("nordlynx".into())).connected);
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

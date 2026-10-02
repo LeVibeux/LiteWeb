@@ -33,8 +33,12 @@ pub fn fingerprint_script() -> String {
   }}
   var nav = window.navigator;
   pin(nav, "userAgent", "{user_agent}");
+  pin(nav, "appVersion", "{app_version}");
   pin(nav, "platform", "{platform}");
   pin(nav, "vendor", "Google Inc.");
+  pin(nav, "product", "Gecko");
+  pin(nav, "productSub", "20030107");
+  pin(nav, "language", "fr-FR");
   pin(nav, "webdriver", false); // navigator.webdriver
   try {{ Object.defineProperty(navigator, "webdriver", {{ get: function () {{ return false; }}, configurable: false }}); }} catch (error) {{}}
   pin(nav, "hardwareConcurrency", {hardware_concurrency});
@@ -45,6 +49,19 @@ pub fn fingerprint_script() -> String {
   try {{ Object.defineProperty(nav, "plugins", {{ get: function () {{ return Object.freeze([]); }}, configurable: false }}); }} catch (error) {{}}
   try {{ Object.defineProperty(nav, "mimeTypes", {{ get: function () {{ return Object.freeze([]); }}, configurable: false }}); }} catch (error) {{}}
   try {{ nav.getBattery = function () {{ return Promise.reject(new DOMException("NotAllowedError")); }}; }} catch (error) {{}}
+
+  // Permissions : WebKit répond "prompt" là où Chrome répond "denied".
+  // Un site qui interroge camera/geolocation/microphone voit la différence.
+  try {{
+    var query = Permissions.prototype.query;
+    Permissions.prototype.query = function (desc) {{
+      var name = desc && desc.name;
+      if (name === "camera" || name === "microphone" || name === "geolocation" || name === "notifications" || name === "push") {{
+        return Promise.resolve({{ state: "denied", onchange: null }});
+      }}
+      return query.call(this, desc);
+    }};
+  }} catch (error) {{}}
 
   var screen = window.screen;
   pin(screen, "width", {screen_width});
@@ -68,9 +85,66 @@ pub fn fingerprint_script() -> String {
     }};
   }} catch (error) {{}}
 
+  // Fontes : une machine Linux a ~134 fontes (Aakar, AnjaliOldLipi, …) à 0,00 %.
+  // On ne peut pas cacher les fontes du système, mais on peut faire échouer
+  // la sonde JS qui mesure la largeur d'un texte par fonte.
   try {{
-    var getParameter = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function (parameter) {{
+    var measure = CanvasRenderingContext2D.prototype.measureText;
+    CanvasRenderingContext2D.prototype.measureText = function (text) {{
+      var metrics = measure.call(this, text);
+      var width = Math.round(String(text).length * 7);
+      return {{
+        width: width,
+        actualBoundingBoxLeft: 0,
+        actualBoundingBoxRight: width,
+        actualBoundingBoxAscent: 8,
+        actualBoundingBoxDescent: 2,
+        fontBoundingBoxAscent: 10,
+        fontBoundingBoxDescent: 3,
+        emHeightAscent: 8,
+        emHeightDescent: 2,
+        hangingBaseline: 6,
+        alphabeticBaseline: 0,
+        ideographicBaseline: -2
+      }};
+    }};
+  }} catch (error) {{}}
+
+  // Canvas : le rendu GPU est unique (0,00 %). On bruit le readback, pas le
+  // dessin, pour que le site voie une empreinte stable mais pas la nôtre.
+  try {{
+    var read = CanvasRenderingContext2D.prototype.getImageData;
+    CanvasRenderingContext2D.prototype.getImageData = function (x, y, w, h) {{
+      var data = read.call(this, x, y, w, h);
+      var pixels = data.data;
+      for (var i = 0; i < pixels.length; i += 4) {{
+        pixels[i] = pixels[i] ^ 1;
+      }}
+      return data;
+    }};
+    var toData = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function () {{
+      var ctx = this.getContext("2d");
+      if (ctx) {{
+        var img = ctx.getImageData(0, 0, this.width, this.height);
+        ctx.putImageData(img, 0, 0);
+      }}
+      return toData.apply(this, arguments);
+    }};
+    var toBlob = HTMLCanvasElement.prototype.toBlob;
+    HTMLCanvasElement.prototype.toBlob = function (cb) {{
+      var ctx = this.getContext("2d");
+      if (ctx) {{
+        var img = ctx.getImageData(0, 0, this.width, this.height);
+        ctx.putImageData(img, 0, 0);
+      }}
+      return toBlob.apply(this, arguments);
+    }};
+  }} catch (error) {{}}
+
+  function spoofWebGL(proto) {{
+    var getParameter = proto.getParameter;
+    proto.getParameter = function (parameter) {{
       var ext = this.getExtension("WEBGL_debug_renderer_info");
       if (ext) {{
         if (parameter === ext.UNMASKED_VENDOR_WEBGL) return "{webgl_vendor}";
@@ -79,10 +153,23 @@ pub fn fingerprint_script() -> String {
       if (parameter === this.MAX_TEXTURE_SIZE) return {webgl_max_texture_size};
       return getParameter.call(this, parameter);
     }};
-  }} catch (error) {{}}
+    var getExtension = proto.getExtension;
+    proto.getExtension = function (name) {{
+      if (name === "WEBGL_debug_renderer_info") {{
+        return getExtension.call(this, name) || {{
+          UNMASKED_VENDOR_WEBGL: 0x9245,
+          UNMASKED_RENDERER_WEBGL: 0x9246
+        }};
+      }}
+      return getExtension.call(this, name);
+    }};
+  }}
+  try {{ spoofWebGL(WebGLRenderingContext.prototype); }} catch (error) {{}}
+  try {{ spoofWebGL(WebGL2RenderingContext.prototype); }} catch (error) {{}}
 }})();"#,
         world = FINGERPRINT_WORLD,
         user_agent = s.user_agent,
+        app_version = s.user_agent.trim_start_matches("Mozilla/"),
         platform = s.platform,
         hardware_concurrency = s.hardware_concurrency,
         device_memory = s.device_memory,
@@ -179,6 +266,11 @@ mod tests {
         assert!(js.contains("UNMASKED_VENDOR_WEBGL"));
         assert!(js.contains("UNMASKED_RENDERER_WEBGL"));
         assert!(js.contains("MAX_TEXTURE_SIZE"));
+        assert!(js.contains("WebGL2RenderingContext"));
+        assert!(js.contains("measureText"));
+        assert!(js.contains("getImageData"));
+        assert!(js.contains("toDataURL"));
+        assert!(js.contains("Permissions.prototype.query"));
         assert!(js.contains("plugins"));
         assert!(js.contains("mimeTypes"));
     }
@@ -187,7 +279,7 @@ mod tests {
     fn script_is_compact_and_side_effect_free() {
         let js = fingerprint_script();
         assert!(
-            js.len() < 8_000,
+            js.len() < 12_000,
             "le script tourne sur chaque page : {}",
             js.len()
         );

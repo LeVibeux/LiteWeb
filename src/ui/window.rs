@@ -99,7 +99,19 @@ impl BrowserWindow {
     pub fn new(app: &Application, benchmark: Option<BenchmarkConfig>) -> Self {
         let blocker = Rc::new(Blocker::new());
         let storage = Storage::open();
-        let privacy_on = storage.get_setting("privacy_enabled").as_deref() == Some("1");
+        let stored_mode = storage.get_setting("privacy_mode").unwrap_or_default();
+        let startup_mode = crate::privacy::PrivacyMode::parse(&stored_mode)
+            .unwrap_or(crate::privacy::PrivacyMode::Off);
+        // `Rotate` sans NordVPN retombe sur `Blend` : mieux vaut un profil
+        // cohérent qu'une empreinte neuve derrière l'IP réelle.
+        let startup_mode = if startup_mode == crate::privacy::PrivacyMode::Rotate
+            && !crate::privacy::nordvpn_connected()
+        {
+            crate::privacy::PrivacyMode::Blend
+        } else {
+            startup_mode
+        };
+        let privacy_on = startup_mode != crate::privacy::PrivacyMode::Off;
         let vpn_on = storage.get_setting("vpn_required").as_deref() == Some("1");
         let web_context = if privacy_on {
             crate::privacy::create_private_web_context()
@@ -107,6 +119,7 @@ impl BrowserWindow {
             create_web_context()
         };
         let privacy = crate::privacy::PrivacyPolicy::new(privacy_on, vpn_on);
+        let _ = privacy.set_mode(startup_mode);
         let sandboxes = std::rc::Rc::new(std::cell::RefCell::new(
             crate::privacy::SiteSandboxRegistry::new(
                 crate::privacy::SiteSandboxRegistry::default_root(),
@@ -1338,9 +1351,7 @@ impl BrowserWindow {
             CommandAction::History => Self::show_history(state_cmd.clone()),
             CommandAction::DownloadList => Self::show_downloads(state_cmd.clone()),
             CommandAction::PrivacyStatus => Self::show_privacy_status(state_cmd.clone()),
-            CommandAction::PrivacySet(enabled) => {
-                Self::set_privacy_packet(state_cmd.clone(), enabled)
-            }
+            CommandAction::PrivacyMode(mode) => Self::set_privacy_mode(state_cmd.clone(), mode),
             CommandAction::VpnStatus => Self::show_vpn_status(state_cmd.clone()),
             CommandAction::VpnSet(required) => Self::set_vpn_packet(state_cmd.clone(), required),
             CommandAction::Unknown(cmd) => {
@@ -1351,43 +1362,72 @@ impl BrowserWindow {
     }
 
     fn show_privacy_status(state: Rc<RefCell<AppState>>) {
-        let on = state.borrow().privacy.is_enabled();
-        let text = if on {
-            "Paquet privé : actif.\n\n\
-             Empreinte figée, en-têtes durcis, EasyPrivacy, purge cookies 5 min.\n\
-             :privacy off pour revenir au navigateur normal.\n\
-             Relance LiteWeb si tu viens de l'activer : l'isolation cookies utilise un profil séparé."
-        } else {
-            "Paquet privé : inactif.\n\n\
-             :privacy on — empreinte, en-têtes, traqueurs, purge cookies.\n\
-             :vpn on — bloquer la navigation publique sans VPN."
+        let mode = state.borrow().privacy.mode();
+        let text = match mode {
+            crate::privacy::PrivacyMode::Off => {
+                "Paquet privé : inactif.\n\n\
+                 :privacy blend — profil Chrome courant, cohérent.\n\
+                 :privacy vide — retire canvas, WebGL, fontes, permissions.\n\
+                 :privacy rotate — profil tiré par session, NordVPN requis."
+            }
+            crate::privacy::PrivacyMode::Blend => {
+                "Mode blend : profil Chrome/Linux figé.\n\
+                 UA, en-têtes, langue, écran et timezone alignés.\n\
+                 :privacy off pour revenir au navigateur normal."
+            }
+            crate::privacy::PrivacyMode::Blank => {
+                "Mode vide : canvas bruité, WebGL masqué, fontes neutralisées,\n\
+                 permissions en denied. L'empreinte est rare par construction.\n\
+                 :privacy off pour revenir au navigateur normal."
+            }
+            crate::privacy::PrivacyMode::Rotate => {
+                "Mode rotate : profil tiré pour cette session, NordVPN connecté.\n\
+                 :privacy rotate à nouveau pour tirer un autre profil et changer d'IP."
+            }
         };
         Self::show_message("Confidentialité", text);
     }
 
-    fn set_privacy_packet(state: Rc<RefCell<AppState>>, enabled: bool) {
-        {
-            let st = state.borrow();
-            st.privacy.set_enabled(enabled);
-            st.storage
-                .set_setting("privacy_enabled", if enabled { "1" } else { "0" });
-            if enabled {
-                crate::privacy::inject_fingerprint(&st.user_content);
-            } else {
-                st.user_content.remove_all_scripts();
+    fn set_privacy_mode(state: Rc<RefCell<AppState>>, mode: crate::privacy::PrivacyMode) {
+        if mode == crate::privacy::PrivacyMode::Rotate {
+            // La rotation d'IP bloque plusieurs secondes. On la lance avant de
+            // toucher au profil : si elle échoue, on ne change rien.
+            if let Err(error) = crate::privacy::nordvpn_rotate() {
+                Self::show_message(
+                    "Confidentialité",
+                    &format!(
+                        "Rotation NordVPN impossible : {error}\nLe mode rotate reste inactif."
+                    ),
+                );
+                return;
             }
         }
-        let (policy, webviews) = {
+        let accepted = state.borrow().privacy.set_mode(mode);
+        if !accepted {
+            Self::show_message(
+                "Confidentialité",
+                "Mode rotate refusé : NordVPN n'est pas connecté.\n\
+                 Connecte NordVPN, puis relance :privacy rotate.",
+            );
+            return;
+        }
+        {
             let st = state.borrow();
-            let policy = st.energy.level().webview_policy();
-            let webviews: Vec<webkit2gtk::WebView> = st
-                .tabs
-                .tabs()
-                .iter()
-                .filter_map(|tab| tab.webview.clone())
-                .collect();
-            (policy, webviews)
-        };
+            st.storage.set_setting("privacy_mode", mode.as_str());
+            if mode == crate::privacy::PrivacyMode::Off {
+                st.user_content.remove_all_scripts();
+            } else {
+                crate::privacy::inject_fingerprint(&st.user_content);
+            }
+        }
+        let enabled = mode != crate::privacy::PrivacyMode::Off;
+        let webviews: Vec<webkit2gtk::WebView> = state
+            .borrow()
+            .tabs
+            .tabs()
+            .iter()
+            .filter_map(|tab| tab.webview.clone())
+            .collect();
         for webview in webviews {
             if let Some(settings) = WebViewExt::settings(&webview) {
                 if enabled {
@@ -1396,15 +1436,14 @@ impl BrowserWindow {
                     settings.set_user_agent(None);
                 }
             }
-            apply_webview_policy(&webview, policy);
         }
-        let text = if enabled {
-            "Paquet privé activé.\n\
-             Empreinte, en-têtes et traqueurs s'appliquent aux pages rechargées.\n\
-             Relance LiteWeb pour isoler les cookies dans un profil séparé."
-        } else {
-            "Paquet privé désactivé.\n\
-             Recharge les onglets pour retrouver l'empreinte système."
+        let text = match mode {
+            crate::privacy::PrivacyMode::Off => "Paquet privé désactivé.",
+            crate::privacy::PrivacyMode::Blend => "Mode blend activé. Recharge les onglets.",
+            crate::privacy::PrivacyMode::Blank => "Mode vide activé. Recharge les onglets.",
+            crate::privacy::PrivacyMode::Rotate => {
+                "Mode rotate activé. IP tournée, profil tiré pour cette session."
+            }
         };
         Self::show_message("Confidentialité", text);
     }

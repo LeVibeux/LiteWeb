@@ -17,7 +17,7 @@ pub enum CommandAction {
     History,
     DownloadList,
     PrivacyStatus,
-    PrivacySet(bool),
+    PrivacyMode(crate::privacy::PrivacyMode),
     VpnStatus,
     VpnSet(bool),
     Unknown(String),
@@ -91,9 +91,10 @@ impl CommandPalette {
             "download" | "dl" => CommandAction::DownloadList,
             "privacy" => match arg.to_lowercase().as_str() {
                 "" | "status" => CommandAction::PrivacyStatus,
-                "on" => CommandAction::PrivacySet(true),
-                "off" => CommandAction::PrivacySet(false),
-                _ => CommandAction::Unknown(cmd.to_string()),
+                other => match crate::privacy::PrivacyMode::parse(other) {
+                    Some(mode) => CommandAction::PrivacyMode(mode),
+                    None => CommandAction::Unknown(cmd.to_string()),
+                },
             },
             "vpn" => {
                 let mut words = arg.split_whitespace();
@@ -408,11 +409,19 @@ mod tests {
         );
         assert_eq!(
             CommandPalette::parse(":privacy on"),
-            CommandAction::PrivacySet(true)
+            CommandAction::PrivacyMode(crate::privacy::PrivacyMode::Blend)
+        );
+        assert_eq!(
+            CommandPalette::parse(":privacy vide"),
+            CommandAction::PrivacyMode(crate::privacy::PrivacyMode::Blank)
+        );
+        assert_eq!(
+            CommandPalette::parse(":privacy rotate"),
+            CommandAction::PrivacyMode(crate::privacy::PrivacyMode::Rotate)
         );
         assert_eq!(
             CommandPalette::parse(":privacy off"),
-            CommandAction::PrivacySet(false)
+            CommandAction::PrivacyMode(crate::privacy::PrivacyMode::Off)
         );
         assert_eq!(CommandPalette::parse(":vpn"), CommandAction::VpnStatus);
         assert_eq!(

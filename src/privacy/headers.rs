@@ -31,8 +31,13 @@ pub const STRIPPED_CLIENT_HINTS: [&str; 18] = [
 
 /// Politique `Referer` : cross-origin → aucun `Referer` ; same-origin →
 /// réduit à l'origine. Fail-closed : page inconnue ou non parsable → `None`.
-pub fn referer_policy(page_uri: Option<&str>, request_uri: &str) -> Option<String> {
-    let page = Url::parse(page_uri?).ok()?;
+///
+/// `previous` est l'URL déjà chargée dans la WebView. Sur une navigation
+/// principale, `resource-load-started` tire avant que `view.uri()` change :
+/// `previous` est alors l'ancienne page, pas la page courante. On le passe
+/// quand même, sinon le Referer complet de la page précédente fuit.
+pub fn referer_policy(previous_uri: Option<&str>, request_uri: &str) -> Option<String> {
+    let page = Url::parse(previous_uri?).ok()?;
     let request = Url::parse(request_uri).ok()?;
     if !matches!(page.scheme(), "http" | "https") || !matches!(request.scheme(), "http" | "https") {
         return None;
@@ -67,12 +72,18 @@ pub fn apply_referer_policy(headers: &MessageHeaders, referer: Option<&str>) {
 }
 
 /// DNT + Accept-Language figé + suppression de tous les `Sec-CH-*`.
+/// `Accept` est réécrit : WebKitGTK envoie `*/*;q=0.8`, Chrome envoie
+/// `image/avif,image/webp,…`. Cette différence seule classe le navigateur.
 pub fn harden_request_headers(headers: &MessageHeaders, page_uri: Option<&str>, request_uri: &str) {
     for name in STRIPPED_CLIENT_HINTS {
         headers.remove(name);
     }
     headers.replace("DNT", PRIVACY_FINGERPRINT.dnt);
     headers.replace("Accept-Language", PRIVACY_FINGERPRINT.accept_language);
+    headers.replace(
+        "Accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    );
     let referer = referer_policy(page_uri, request_uri);
     apply_referer_policy(headers, referer.as_deref());
 }
