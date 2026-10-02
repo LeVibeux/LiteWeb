@@ -1,6 +1,6 @@
 [package]
 name = "liteweb"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Lightweight web browser optimized for CPU, RAM and energy"
 license = "MIT"

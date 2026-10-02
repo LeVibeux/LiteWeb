@@ -6,7 +6,7 @@
 
 Lightweight Linux web browser optimized for CPU, memory, and energy usage.
 
-> **Preview (v0.1).** Linux + system WebKit only. This is not a Firefox/Chrome replacement: no downloads yet, the filter applies to navigations only, and everyday sites that need HTTP Basic or pop-up-heavy flows will break. Use it as a light reader / energy-saving browser.
+> **Preview (v0.1.1).** Linux + system WebKit only. This is not a Firefox/Chrome replacement: filtering is not comprehensive, and everyday sites that need HTTP Basic or pop-up-heavy flows may break. Use it as a light reader / energy-saving browser.
 
 ## Features
 
@@ -15,6 +15,8 @@ Lightweight Linux web browser optimized for CPU, memory, and energy usage.
 - Energy-saving modes (Normal / Eco / Aggressive / Ultra) with automatic suspension of inactive tabs
 - History and bookmarks (local SQLite)
 - Keyboard shortcuts and a command palette (`:`)
+- Downloads with an explicit save dialog (`:download` lists them)
+- Optional privacy hardening and VPN navigation gate, both disabled by default
 
 ## Requirements (Linux)
 
@@ -41,7 +43,7 @@ User data: `~/.config/liteweb/liteweb.db`
 ## Security
 
 - Navigation is limited to `http://`, `https://`, and `about:blank`; local or active schemes (`file:`, `data:`, `javascript:`) are rejected. Missing or unparsable URIs fail closed.
-- Popups (`target=_blank`, `window.open`) never create an unmanaged WebView. A safe URL opens in a new LiteWeb tab; anything else is dropped. Downloads and HTTP Basic prompts are cancelled until those features exist.
+- Popups (`target=_blank`, `window.open`) never create an unmanaged WebView. A safe URL opens in a new LiteWeb tab; anything else is dropped. Downloads require an explicit save dialog; HTTP Basic prompts are cancelled.
 - Web permissions (camera, microphone, geolocation, notifications) and file choosers are denied by default. Fullscreen is disabled so a page cannot cover the address bar.
 - WebKit sandboxing is enabled, TLS errors are blocking, remote automation is disabled, and third-party cookies are rejected.
 - The address bar updates on the committed URL (not only when the load finishes), shows punycode for IDN hosts, and strips bidi overrides. Ultra reader pages are flattened and shipped with a strict CSP.
@@ -77,7 +79,12 @@ The built-in filter applies to navigations. It is not a complete subresource blo
 :eco on|off|aggressive|ultra
 :bookmark list
 :history
+:download
+:privacy blend|vide|rotate|off
+:vpn on|off
 ```
+
+Privacy and VPN status: `:privacy` and `:vpn`. Relaunch after first enabling privacy to use the separate cookie context. The `vide` and `rotate` commands are experimental: distinct fingerprint profiles are not yet wired into all JS/header/settings paths. Do not rely on them for anonymity or a guaranteed IP change. WebKit remains identifiable. VPN detection checks an enabled tunnel and the effective IPv4 route; it is not an OS firewall or an IPv6 leak guarantee.
 
 ## Energy modes
 
